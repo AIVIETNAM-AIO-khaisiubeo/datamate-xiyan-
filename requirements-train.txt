@@ -1,0 +1,7 @@
+# optional: fine-tuning the LLM generators (SFT + GRPO with abstention-aware reward)
+torch>=2.7
+transformers>=4.51
+peft>=0.15
+trl>=0.19
+datasets>=3.0
+accelerate>=1.6

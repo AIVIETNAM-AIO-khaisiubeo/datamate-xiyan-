@@ -1,0 +1,12 @@
+.cache/
+data/*
+!data/README.md
+*.pyc
+__pycache__/
+runs/
+outputs/
+result/
+*.pkl
+.venv/
+.pytest_cache/
+eval_rules_out*.jsonl
