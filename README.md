@@ -19,11 +19,14 @@ abstention.
 
 | Split | Chế độ | Đúng | Sai | Bỏ trống | PA |
 |---|---|---:|---:|---:|---:|
-| Train (3.000 câu, 30 shop) | G1 luật + bộ thực thi, CPU, không LLM | _xem `docs/RESULTS.md`_ | | | |
-| Public test (1.000 câu, 14 shop) | như trên | không có đáp án | | | – |
+| Train (3.000 câu, 30 shop) | agent CPU (G1 luật + coverage + selector), không LLM | 3.000 | 0 | 0 | **1.000** |
+| Train **làm nhiễu kiểu public** (bỏ dấu, Telex, viết tắt, phương ngữ, "Th7/25") | như trên | 2.990 | 0 | 10 | **0.997** |
+| Public test (1.000 câu, 14 shop) | như trên | 844 giá trị + 21 `unanswerable` | ? | 135 | chưa có đáp án |
 
-> Kết quả train là **trong mẫu** (luật được phát triển khi nhìn lỗi trên train) — không phải ước lượng
-> cho shop chưa thấy. Phần LLM (G2–G4) cần GPU nên chưa được đo trong môi trường phát triển CPU; xem §7.
+> Kết quả train là **trong mẫu** (luật được phát triển khi phân tích lỗi trên train — không mã hoá đáp án, không
+> logic theo id). Bản nhiễu ước lượng độ bền với câu hỏi lộn xộn. Phần LLM (G2–G4) cần GPU nên mới được kiểm
+> thử bằng LLM giả lập, chưa đo độ chính xác; xem `docs/RESULTS.md` và §7. File nộp public (chế độ CPU):
+> `submissions/public_test_rule_only.jsonl`.
 
 ## 2. Kiến trúc
 

@@ -410,10 +410,29 @@ class RuleParser:
                 return None
             return Frame("orders_min_amount", [P], params={"thr": _threshold(s)}, filters=f, answer_type="number")
         # ---------------------------------------------------------------- deliveries
-        if _has(s, r"dot giao|dot hang|chuyen giao|chuyen hang|xe .*giao|xe cho|giao .*dot|cho giao"):
+        if _has(s, r"\bdot\b|cho di|da cho|duoc cho|da giao|giao tu|giao duoc|chua giao|xe .*giao|xe cho|chuyen giao|chuyen hang"):
             if not P:
                 return None
-            return Frame("delivery_trips", [P], answer_type="number")
+            mt = re.search(r"(?:thanh|tu|it nhat|>=) (\d+) dot", s)
+            if mt and _has(s, r"(?:bao nhieu|may|so|dem) don"):
+                return Frame("delivery_orders_min_trips", [P], params={"n": int(mt.group(1))}, answer_type="number")
+            if pkey and _has(s, r"cho di|da cho|da giao|giao duoc|giao cho khach|duoc giao|xe .*giao"):
+                u = self.lk.unit_after(s, ("bao nhieu", "may", "bn")) or None
+                return Frame("delivered_qty", [P], filters={"product": pkey}, unit=u, answer_type="number")
+            if _has(s, r"chua giao|con no giao|chua cho"):
+                return Frame("unsupported", reason="hàng chưa giao chưa được mô hình hoá")
+            if _has(s, r"(?:bao nhieu|may|so|dem|tong cong|total) dot|dot giao|dot hang|xe .*giao .*dot|xe cho .*dot|cho .*dot"):
+                return Frame("delivery_trips", [P], answer_type="number")
+            return Frame("unsupported", reason="câu hỏi giao hàng chưa được mô hình hoá")
+        # ---------------------------------------------------------------- credit terms (due dates)
+        if _has(s, r"\bngay phai tra\b|\bhan tra\b|\bhan thanh toan\b|\bhan no\b|\bden han\b|\btoi han\b|\bqua han\b"):
+            snap = ti.snapshot or today
+            if _has(s, r"(?:bao nhieu|may|so|dem) don") and not _has(s, r"tien|con no bao nhieu"):
+                if _has(s, r"sau hom nay|muon hon hom nay|chua toi han|chua den han|sau ngay hom nay"):
+                    return Frame("credit_due", snapshot=snap, params={"mode": "after_today"}, answer_type="number")
+                if P and P.kind in ("month", "quarter", "range", "mtd", "week"):
+                    return Frame("credit_due", [P], snapshot=snap, params={"mode": "in_period"}, answer_type="number")
+            return Frame("unsupported", reason="câu hỏi về hạn trả nợ chưa được mô hình hoá")
         # ---------------------------------------------------------------- profit
         if _has(s, r"lai rong|loi nhuan rong|tru (?:het )?chi phi"):
             if not P:
@@ -437,7 +456,8 @@ class RuleParser:
         if _has(s, r"ban chay|ban nhieu nhat|hot nhat|best ?seller|chay nhat|ban duoc nhieu nhat|ban dc nhieu nhat|ban ra nhieu nhat|ban nhieu|ua chuong|ban (?:duoc |dc |ra )?nhieu \w+ nhat") and not _has(s, r"ngay nao|thang nao|nhan vien|khach"):
             if not P:
                 return None
-            by = "orders" if _has(s, r"ua chuong|nhieu don nhat") else "qty"
+            by = "orders" if _has(s, r"ua chuong|nhieu don nhat") else \
+                "revenue" if _has(s, r"nhieu tien|doanh thu cao|doanh so cao|tien nhat") else "qty"
             return Frame("top_products", [P], by=by, k=k or 1, filters=f,
                          answer_type="list" if (k and k > 1) or _has(s, r"nhung mat hang|liet ke|nhung san pham|nhung gi|nhung mon") else "string")
         if _has(s, r"nhan vien|nguoi ban") and _has(s, r"gioi nhat|cao nhat|nhieu nhat|nhieu tien nhat|\bnao\b|la ai|\bai\b") and not _has(s, r"ma nv|nv\d"):
@@ -477,7 +497,7 @@ class RuleParser:
             return Frame("best_month", months, answer_type="date")
         # ---------------------------------------------------------------- monthly list / increasing
         months = _months_list(ti)
-        if _has(s, r"tang lien tuc|luon cao hon|thang sau .* cao hon|tang deu|cao hon thang .* va thang"):
+        if _has(s, r"tang lien tuc|luon cao hon|luon hon|thang sau .* (?:cao )?hon thang truoc|tang deu|cao hon thang .* va thang|cung cao hon"):
             if len(months) < 2:
                 return None
             return Frame("increasing", months, answer_type="boolean")

@@ -79,7 +79,12 @@ class FrameExecutor:
         try:
             return self._run(fr)
         except Unanswerable as e:
-            return Answer("unanswerable", reason=str(e), meta={"unans": True})
+            msg = str(e)
+            # 'the data does not record X' is only safe when every table of the shop was understood
+            unmodelled = [t for t in (getattr(self.ex.b, "other", None) or []) if len(t.df) > 5]
+            if unmodelled and "ngoài khoảng dữ liệu" not in msg:
+                return Answer("abstain", reason=f"possibly in an unmodelled table: {msg}")
+            return Answer("unanswerable", reason=msg, meta={"unans": True})
         except (NotSupported, KeyError, ValueError, TypeError, ZeroDivisionError, IndexError, AttributeError) as e:
             return Answer("abstain", reason=f"{type(e).__name__}: {e}")
 
@@ -112,6 +117,38 @@ class FrameExecutor:
             return Answer("number", ex.aov(P, f))
         if it == "units":
             return Answer("number", ex.units(P, f, fr.unit))
+        if it in ("delivery_orders_min_trips", "delivered_qty"):
+            D = ex.b.deliveries
+            if D.empty:
+                raise Unanswerable("không có sổ giao hàng")
+            Pc = ex.clip(P)
+            O = ex.orders(Pc, None)
+            O = O[O["status_final"] != "cancelled"]
+            oids = set(O["order_id"])
+            Dd = D[D["order_id"].isin(oids) & D["date"].map(lambda d: d is not None and d <= ex.today)]
+            if it == "delivery_orders_min_trips":
+                c = Dd.groupby("order_id")["trip_no"].nunique()
+                return Answer("number", int((c >= fr.params["n"]).sum()))
+            k = f["product"]
+            col = "base_qty" if "base_qty" in Dd.columns else "qty_base"
+            q = Dd.loc[Dd["pkey"] == k, col].sum()
+            if fr.unit:
+                fac = ex.unit_factor(k, fr.unit)
+                if fac and fac != 1:
+                    q = q / fac
+            return Answer("number", _num(q))
+        if it == "credit_due":
+            T = ex.b.debt_terms
+            if T.empty or "due_date" not in T.columns:
+                raise Unanswerable("không có sổ hạn nợ")
+            O = ex.O
+            od = dict(zip(O["order_id"], O["date"]))
+            st = dict(zip(O["order_id"], O["status_final"]))
+            rows = [(o, d) for o, d in zip(T["order_id"], T["due_date"])
+                    if d is not None and od.get(o) is not None and od[o] <= fr.snapshot and st.get(o) != "cancelled"]
+            if fr.params["mode"] == "after_today":
+                return Answer("number", sum(1 for _, d in rows if d > fr.snapshot))
+            return Answer("number", sum(1 for _, d in rows if P.start <= d <= P.end))
         if it == "top_brands":
             Pb = ex.b.products
             if Pb.empty or "brand" not in Pb.columns or Pb["brand"].isna().all():

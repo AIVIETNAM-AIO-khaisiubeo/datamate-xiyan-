@@ -37,6 +37,7 @@ def main(split):
     for q in qs:
         by.setdefault(q["business_id"], []).append(q)
     vocab = set()
+    ivocab = {}
     art = os.path.join(ROOT, "artifacts")
     os.makedirs(art, exist_ok=True)
     nb = 0
@@ -56,6 +57,7 @@ def main(split):
                 ans = FrameExecutor(Executor(b, today), cal).run(fr)
                 if score_one(ans.to_submission(q["id"]), refs[q["id"]]) != 1:
                     continue
+                ivocab.setdefault(fr.intent, set()).update(t for t in masked.split() if t.isalpha() and t != "_e_")
                 item = {"q": q["question"], "nq": nq, "intent": fr.intent,
                         "frame_llm": json.dumps(frame_to_llm_json(fr, b), ensure_ascii=False),
                         "canon": render_frame(fr, b.product_name) or q["question"]}
@@ -64,6 +66,8 @@ def main(split):
             print(bid, len(vocab), nb, flush=True)
     vocab -= {"_e_"}
     save_vocab(vocab, os.path.join(art, "known_vocab.json"))
+    with open(os.path.join(art, "intent_vocab.json"), "w", encoding="utf-8") as fh:
+        json.dump({k: sorted(v) for k, v in ivocab.items()}, fh, ensure_ascii=False)
     print("vocab", len(vocab), "bank", nb)
 
 
