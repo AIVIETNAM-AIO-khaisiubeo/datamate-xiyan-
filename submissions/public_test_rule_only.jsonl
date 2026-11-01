@@ -843,7 +843,7 @@
 {"id": "q_101a2b744e56", "type": "abstain"}
 {"id": "q_16852a1ac5f7", "type": "abstain"}
 {"id": "q_220b5f8bc174", "type": "percent", "answer": -5.06}
-{"id": "q_25af2ef67065", "type": "abstain"}
+{"id": "q_25af2ef67065", "type": "percent", "answer": 13.08}
 {"id": "q_2710e38fa0d6", "type": "abstain"}
 {"id": "q_2f8852d2a6bc", "type": "number", "answer": 4991361000}
 {"id": "q_31dad3219917", "type": "number", "answer": 3148004000}
@@ -863,7 +863,7 @@
 {"id": "q_5176249df658", "type": "number", "answer": 3591550}
 {"id": "q_51b4d4e4e063", "type": "abstain"}
 {"id": "q_527c4e439966", "type": "abstain"}
-{"id": "q_5a9e0b8dce13", "type": "abstain"}
+{"id": "q_5a9e0b8dce13", "type": "number", "answer": 47}
 {"id": "q_5c0acaa8786b", "type": "abstain"}
 {"id": "q_603c21ebef86", "type": "percent", "answer": 3.81}
 {"id": "q_6a138cfe1257", "type": "percent", "answer": 36.52}
@@ -874,17 +874,17 @@
 {"id": "q_78b9ca050ca1", "type": "abstain"}
 {"id": "q_792e1070baaf", "type": "abstain"}
 {"id": "q_7c6452fd1c4b", "type": "unanswerable", "reason": "Dữ liệu không ghi địa chỉ khách"}
-{"id": "q_7c8c12f20aa2", "type": "abstain"}
+{"id": "q_7c8c12f20aa2", "type": "number", "answer": 5}
 {"id": "q_7cba4252429f", "type": "number", "answer": 5228708}
 {"id": "q_86a32a09633a", "type": "number", "answer": 117000000}
 {"id": "q_8e44f654589f", "type": "abstain"}
 {"id": "q_8e50e264d157", "type": "number", "answer": 9563422}
-{"id": "q_917d6af4418e", "type": "abstain"}
+{"id": "q_917d6af4418e", "type": "string", "answer": "Xiaomi Redmi Note 14"}
 {"id": "q_94f634ace6b1", "type": "number", "answer": 4296936}
 {"id": "q_9c2c85d9330d", "type": "percent", "answer": 41.14}
-{"id": "q_a883b37bc197", "type": "abstain"}
+{"id": "q_a883b37bc197", "type": "number", "answer": 31}
 {"id": "q_a8d7ce013c6d", "type": "abstain"}
-{"id": "q_b2eb16844a32", "type": "abstain"}
+{"id": "q_b2eb16844a32", "type": "number", "answer": 5}
 {"id": "q_b33016c0dd71", "type": "abstain"}
 {"id": "q_b6abccb6b3cb", "type": "abstain"}
 {"id": "q_b9aab5c81568", "type": "list", "answer": [1991699500, 1551893500, 1628303500]}

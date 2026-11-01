@@ -33,7 +33,7 @@ MONEY = {"unit_price", "amount", "line_discount", "cost_unit", "goods_total", "o
          "old_price", "refund", "trade_in", "cash_in", "cash_refund", "cash_net"}
 NUMS = {"base_qty", "stock_qty", "qty_base", "qty_returned", "trip_no", "days", "guests", "line_no", "balance",
         "points", "commission", "vat_rate"}
-DATES = {"date", "due_date", "expiry", "created", "registered", "date_from", "date_to", "start"}
+DATES = {"date", "due_date", "expiry", "created", "registered", "date_from", "date_to", "start", "purchase_date"}
 DATETIMES = {"datetime", "pay_datetime", "ret_datetime", "move_datetime"}
 IDS = {"order_id", "receipt_id", "payment_id", "product_code", "customer_id", "supplier_id", "staff", "lot",
        "return_id", "doc_id"}
@@ -324,6 +324,7 @@ def build_biz(biz_dir: str, biz_id: Optional[str] = None) -> Biz:
     biz._cust_name, biz._pname, biz._pcode, biz._pbase, biz._drug = {}, {}, {}, {}, {}
     biz._aliases = {}
     biz._tradein = cat("tradein")
+    biz._warranty = cat("warranty")
     al = cat("aliases")
     if not al.empty and "alias" in al.columns and "product_name" in al.columns:
         for a_, n_, g_ in zip(al["alias"], al["product_name"], al.get("product_group", [None] * len(al))):
@@ -977,7 +978,7 @@ def _build_misc(biz: Biz):
         biz.deliveries = D
 
 
-BUILDER_VERSION = "b9"
+BUILDER_VERSION = "b10"
 
 
 def load_biz(biz_dir: str, biz_id: Optional[str] = None) -> Biz:

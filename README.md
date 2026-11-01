@@ -21,7 +21,7 @@ abstention.
 |---|---|---:|---:|---:|---:|
 | Train (3.000 câu, 30 shop) | agent CPU (G1 luật + coverage + selector), không LLM | 3.000 | 0 | 0 | **1.000** |
 | Train **làm nhiễu kiểu public** (bỏ dấu, Telex, viết tắt, phương ngữ, "Th7/25") | như trên | 2.990 | 0 | 10 | **0.997** |
-| Public test (1.000 câu, 14 shop) | như trên | 844 giá trị + 21 `unanswerable` | ? | 135 | chưa có đáp án |
+| Public test (1.000 câu, 14 shop) | như trên | 850 giá trị + 21 `unanswerable` | ? | 129 | chưa có đáp án |
 
 > Kết quả train là **trong mẫu** (luật được phát triển khi phân tích lỗi trên train — không mã hoá đáp án, không
 > logic theo id). Bản nhiễu ước lượng độ bền với câu hỏi lộn xộn. Phần LLM (G2–G4) cần GPU nên mới được kiểm
@@ -176,7 +176,7 @@ Dockerfile · predict.sh · requirements*.txt
 
 ## 7. Hạn chế & hướng tiếp
 
-* Public/private có loại hình mới (điện thoại, sửa xe, mẹ & bé…) với sổ chuyên biệt (trả góp, bảo hành, thu máy cũ)
+* Public/private có loại hình mới (điện thoại, sửa xe, mẹ & bé…) với sổ chuyên biệt; đã mô hình hoá sổ sửa xe, thu máy cũ, sổ bảo hành, size/hãng; chưa có sổ góp & sổ nợ tự ghi
   và luật ngành riêng: G1 chỉ phủ phần chung; phần còn lại dựa vào G2–G4 hoặc bỏ trống.
 * Số liệu LLM chưa đo do môi trường phát triển không có GPU; chạy `training/` + `scripts/calibrate.py` trên log
   GPU để hiệu chuẩn lại `artifacts/reliability.json` trước khi nộp.

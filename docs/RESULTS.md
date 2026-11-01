@@ -41,20 +41,23 @@ Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 
 
 | | Số câu |
 |---|---:|
-| Trả lời giá trị | 844 |
+| Trả lời giá trị | 850 |
 | `unanswerable` (có lý do) | 21 |
-| `abstain` | 135 |
+| `abstain` | 129 |
 
 Theo shop (trả lời / bỏ trống): dev_001 81/6 · dev_002 38/3 · dev_003 123/6 · dev_004 85/11 · dev_005 78/9 ·
 dev_006 93/18 · dev_007 54/6 · dev_008 89/10 · dev_009 20/1 · dev_010 54/5 · dev_011 33/7 (điện thoại) ·
-dev_012 38/12 (sửa xe) · dev_013 49/8 (mẹ & bé) · dev_014 30/33 (điện thoại + trả góp/bảo hành).
+dev_012 38/12 (sửa xe) · dev_013 49/8 (mẹ & bé) · dev_014 36/27 (điện thoại + trả góp/bảo hành).
 
 Thời gian: ~90 s cho 1.000 câu trên CPU (sau khi đã có cache), ~4 phút khi nạp dữ liệu lần đầu.
 File nộp: `submissions/public_test_rule_only.jsonl`.
 
-Bỏ trống tập trung ở các sổ chuyên biệt chưa được mô hình hoá (sổ góp, sổ bảo hành, đếm theo loại việc sửa xe,
+Bỏ trống tập trung ở các sổ chuyên biệt chưa được mô hình hoá (sổ góp, sổ nợ tự ghi, đếm theo loại việc sửa xe,
 hàng chưa giao) và câu có từ ngoài phạm vi hiểu biết của bộ luật (cơ chế *coverage*). Đây là chỗ các generator
 LLM (G2–G4) được kỳ vọng bổ sung khi chạy trên GPU.
+
+**Tái lập / đa nền tảng:** `predict.sh` chạy trên Linux (WSL Ubuntu 22.04, Python 3.10, pandas 2.3, numpy 2.2) cho
+**1000/1000 đáp án giống hệt** bản Windows (Python 3.15, pandas 3.0) — phần luật là tất định.
 
 ## 3. Các cơ chế chống trả lời sai (đã kiểm chứng trên train/nhiễu)
 

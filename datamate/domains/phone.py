@@ -17,7 +17,7 @@ ACCESSORY = re.compile(r"phu kien|accessor")
 USED = re.compile(r"may cu|\bcu\b|used|2nd")
 NEW = re.compile(r"may moi|\bmoi\b|new")
 DOMAIN_VOCAB = set("""may moi cu phu kien chiec dien thoai dong hang thu tra khach phai bot tien sau gom
-ca lan tinh tru doi""".split())
+ca lan tinh tru doi bao hanh luot nhan mang dem toi quay lai""".split())
 
 
 def is_phone_shop(b, L=None) -> bool:
@@ -54,6 +54,23 @@ def parse(rp, s: str, q: str, ti, P) -> Optional["Frame"]:
     if not b.flags.get("phone"):
         return None
     phones = bool(re.search(r"dien thoai|chiec|\bmay\b(?! cu thu)", s)) and not re.search(r"phu kien(?! ra)", s.replace("khong tinh phu kien", "").replace("bo phu kien", "").replace("tru phu kien", ""))
+    W = getattr(b, "_warranty", None)
+    if re.search(r"\bbao hanh\b", s) and W is not None and not W.empty:
+        if not P:
+            return None
+        if re.search(r"%|phan tram|ti le|chiem", s):
+            return Frame("phone_warranty_rate", [P], answer_type="percent")
+        if re.search(r"dong may (?:nao|mo|gi)|may nao|dong nao", s):
+            return Frame("phone_warranty_top_model", [P], answer_type="string")
+        if re.search(r"may ban (?:ra )?|ban ra .*(?:da|duoc) (?:mang|dem|toi|quay)", s) and re.search(r"da|roi|it nhat", s):
+            # the sale period, not the 'tính đến hôm nay' snapshot
+            sale = next((p for p in ti.periods if p.kind in ("month", "quarter", "range", "mtd", "week")), None)
+            if sale is None:
+                return None
+            return Frame("phone_warranty_sold_returned", [sale], snapshot=ti.snapshot or None, answer_type="number")
+        if re.search(r"(?:bao nhieu|may|bn|so) (?:luot|lan|may|chiec)|nhan bao hanh|toi bao hanh|mang .* bao hanh", s):
+            return Frame("phone_warranty_count", [P], answer_type="number")
+        return Frame("unsupported", reason="câu hỏi bảo hành chưa được mô hình hoá")
     if re.search(r"thu may cu|may cu thu lai|tien may cu|tru vao don", s) and not re.search(r"khach phai tra|phai tra", s):
         if not P:
             return None
@@ -115,6 +132,38 @@ def run(fe, fr):
     it = fr.intent
     P = ex.clip(fr.periods[0])
     O = ex.orders(P, True)
+    if it.startswith("phone_warranty_"):
+        W = ex.b._warranty
+        Wp = W[W["date"].map(lambda d: d is not None and not isinstance(d, float) and P.start <= d <= P.end)]
+        if it == "phone_warranty_count":
+            return Answer("number", int(len(Wp)))
+        if it == "phone_warranty_top_model":
+            s = Wp.groupby(Wp["model"].map(lambda m: str(m).strip()))["date"].size()
+            if s.empty:
+                raise Unanswerable("không có lượt bảo hành trong kỳ")
+            top = s.sort_values(ascending=False)
+            if len(top) > 1 and top.iloc[0] == top.iloc[1]:
+                return Answer("abstain", reason="tie")
+            return Answer("string", str(top.index[0]))
+        if it == "phone_warranty_rate":
+            L = ex.lines(P)
+            sold = L[L["pkey"].isin(_grp_keys(ex, "phones"))]["base_qty"].sum()
+            if sold == 0:
+                raise Unanswerable("không có máy bán ra trong kỳ")
+            return Answer("percent", r2(len(Wp) / sold * 100))
+        if it == "phone_warranty_sold_returned":
+            L = ex.lines(P)
+            ph = L[L["pkey"].isin(_grp_keys(ex, "phones"))]
+            imeis = set()
+            for v in ph.get("imei", []):
+                if isinstance(v, str):
+                    imeis |= {x.strip() for x in v.split("/") if x.strip()}
+                elif v is not None and not (isinstance(v, float) and v != v):
+                    imeis.add(str(int(v)) if isinstance(v, float) else str(v))
+            until = fr.snapshot or ex.today
+            seen = {str(x).strip().split(".")[0] for x, d in zip(W["imei"], W["date"])
+                    if x is not None and d is not None and not isinstance(d, float) and d <= until}
+            return Answer("number", int(len(imeis & seen)))
     if it in ("phone_tradein_total", "phone_tradein_share"):
         if "trade_in" not in O.columns:
             raise Unanswerable("không có sổ thu máy cũ")

@@ -19,7 +19,7 @@ from .reader import RawTable
 # ----------------------------------------------------------------------------- kinds
 KINDS = ["sales", "orders", "payments", "products", "units", "stock", "purchases", "purchase_lines",
          "lots", "lot_sales", "deliveries", "debt_terms", "price_history", "expenses", "customers",
-         "drugs", "returns", "tables", "stock_card", "staff", "suppliers", "shift_report", "aliases", "tradein", "other"]
+         "drugs", "returns", "tables", "stock_card", "staff", "suppliers", "shift_report", "aliases", "tradein", "warranty", "other"]
 
 
 def _k(*names: str) -> List[str]:
@@ -232,6 +232,10 @@ SYN: Dict[str, Dict[str, List[str]]] = {
         "balance": _k("TonCuoi"),
     },
     "tables": {},
+    "warranty": {"date": _k("Ngày nhận", "Ngày bảo hành", "Ngày tiếp nhận"), "imei": _k("IMEI", "Số IMEI"),
+                 "model": _k("Máy", "Dòng máy", "Thiết bị"), "purchase_date": _k("Ngày mua"),
+                 "customer_name": _k("Khách", "Tên khách"), "issue": _k("Lỗi", "Tình trạng lỗi"),
+                 "resolution": _k("Xử lý", "Cách xử lý")},
     "tradein": {"order_id": _k("Trừ vào (STT sổ bán)", "Trừ vào", "STT sổ bán"), "trade_in": _k("Giá thu", "Tiền thu máy"),
                 "date": _k("Ngày", "Ngày thu"), "customer_name": _k("Khách"), "imei": _k("IMEI"), "product_name": _k("Máy thu", "Máy")},
     "aliases": {"alias": _k("Ghi tắt", "Viết tắt", "Tên viết tắt"), "product_name": _k("Tên hàng", "Tên đầy đủ", "Tên"),
@@ -489,6 +493,8 @@ def classify(t: RawTable, readme_cols: Optional[Dict[str, str]] = None) -> str:
         return "stock_card"
     if has("MaPhieuTra", "NgayGioTra"):
         return "returns"
+    if has("Ngày nhận", "Ngày bảo hành") and has("IMEI", "Máy") and not has("Giá thu"):
+        return "warranty"
     if has("Giá thu") and has("Trừ vào (STT sổ bán)", "Trừ vào", "STT sổ bán"):
         return "tradein"
     if has("Ghi tắt", "Viết tắt", "Tên viết tắt") and len(cols) <= 5:
