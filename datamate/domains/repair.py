@@ -34,7 +34,7 @@ def enrich(biz, L: pd.DataFrame) -> pd.DataFrame:
         return L
     plates, models = [], []
     for v in L["vehicle"]:
-        v = "" if v is None else str(v)
+        v = "" if v is None else str(v).replace("α", " alpha")   # 'Wave α' = 'Wave Alpha'
         m = PLATE.search(v)
         plates.append(re.sub(r"\s", "", m.group(1)).upper() if m else None)
         raw = (v[:m.start()] + v[m.end():]).strip() if m else v.strip()
@@ -70,7 +70,47 @@ def enrich(biz, L: pd.DataFrame) -> pd.DataFrame:
 
 ORDER_FIELDS = ("plate", "model_key", "model_raw", "warranty", "work")
 DOMAIN_VOCAB = set("""tho phieu luot xe bao hanh hoa hong hue lanh lam mang toi vo zo sua chiec khac nhau quen lan
-khach dong bien so nhan duoc tiem quay lai thu tien ra dem nhieu nhat cao""".split())
+khach dong bien so nhan duoc tiem quay lai thu tien ra dem nhieu nhat cao man thay nhot lap dau ruot va dien
+den bong ac quy duong rua kim phun noi bo thang phanh sen nhong xich loc gio bugi lop curoa nuoc mat may
+truoc sau co""".split())
+
+# Job taxonomy of the free-text 'Làm gì' cell; first match wins (order matters).  Rulebook: plain 'nhớt'
+# is engine oil (not gear oil 'nhớt láp'), plain 'ruột' is a new tube (not a patch 'vá'), 'sửa điện'
+# excludes bulbs and batteries.
+_JOBS = [("nhot_lap", r"nhot lap|dau lap|\blap\b|nhot hop so|nhot so\b"), ("nhot_may", r"nhot|motul|castrol|shell|dau may"),
+         ("va_ruot", r"\bva(?: ruot| xe| lop| vo| sam)?\b"), ("thay_ruot", r"\bruot\b"), ("sua_dien", r"sua dien|lam dien"),
+         ("den", r"\bden\b"), ("ac_quy", r"ac quy|\bbinh\b"), ("bao_duong", r"bao duong|\bbd\b|\bbdtq\b"),
+         ("kim_phun", r"(?:\brua |ve sinh |\bvs )?kim phun"), ("rua_xe", r"\brua\b"), ("noi", r"\bnoi\b"),
+         ("sen", r"(?:\bbo )?(?:nhong|xich|\bsen\b)|\bnsd\b"),
+         ("phanh", r"\bbo\b|phanh|\bthang\b"), ("loc_gio", r"loc gio"), ("bugi", r"bu ?gi"),
+         ("curoa", r"cu ?roa"), ("vo", r"\bvo\b|\blop\b"), ("nuoc_mat", r"nuoc (?:lam )?mat")]
+_QJOBS = [("nhot_lap", r"nhot lap|dau lap|nhot hop so|\blap\b"), ("va_ruot", r"\bva\b"),
+          ("thay_ruot", r"\bruot\b"), ("nhot_may", r"\bnhot\b|dau may"), ("sua_dien", r"sua dien|lam dien"),
+          ("den", r"bong den|thay den|den pha"), ("ac_quy", r"ac quy"), ("bao_duong", r"bao duong"),
+          ("kim_phun", r"kim phun"), ("rua_xe", r"rua xe"), ("noi", r"\bnoi\b"), ("sen", r"\bsen\b|nhong|xich"),
+          ("phanh", r"bo thang|ma phanh|phanh|\bbo (?:truoc|sau)\b"), ("loc_gio", r"loc gio"), ("bugi", r"bu ?gi"),
+          ("curoa", r"cu ?roa"), ("vo", r"thay vo|vo xe|\blop\b"), ("nuoc_mat", r"nuoc (?:lam )?mat")]
+
+
+def job_items(cell) -> List[str]:
+    """Jobs done on one ticket ('Làm gì' cell); patterns consume their text so 'nhớt láp' is not also 'nhớt'."""
+    out = []
+    if cell is None or (isinstance(cell, float) and cell != cell):
+        return out
+    for part in re.split(r"[,;+/&]", fold(str(cell))):
+        w = " " + part + " "
+        for job, rx in _JOBS:
+            if re.search(rx, w):
+                out.append(job)
+                w = re.sub(rx, " ", w)
+    return out
+
+
+def question_job(s: str) -> Optional[str]:
+    for job, rx in _QJOBS:
+        if re.search(rx, s):
+            return job
+    return None
 
 
 # ---------------------------------------------------------------------------- parsing
@@ -104,7 +144,7 @@ def parse(rp, s: str, q: str, ti, P) -> Optional["Frame"]:
         if not P:
             return None
         return Frame("repair_repeat_vehicles", [P], params={"n": 2}, answer_type="number")
-    mm = re.search(r"(?:bao nhieu|may|bn|so) (?:chiec )?xe ([a-z0-9 ]+?) (?:khac nhau|duoc|vao|toi|den|mang|zo|vo)", s)
+    mm = re.search(r"(?:bao nhieu|may|bn|so) (?:chiec xe|chiec|xe) ([a-z0-9 ]+?) (?:khac nhau|duoc|vao|toi|den|mang|zo|vo)", s)
     if mm and P:
         mk = MODEL_ALIASES.get(fold_key(mm.group(1)), fold_key(mm.group(1)))
         if mk in getattr(b, "_model_name", {}):
@@ -127,14 +167,24 @@ def parse(rp, s: str, q: str, ti, P) -> Optional["Frame"]:
         if not P:
             return None
         return Frame("repair_avg_paid_ticket", [P], filters={"staff": mech} if mech else {}, answer_type="number")
-    if re.search(r"(bao nhieu|may|so|dem|bn|tong|duoc) (?:phieu|luot)|luot xe|phieu sua", s) and not re.search(
+    if re.search(r"(bao nhieu|may|so|dem|bn|tong|duoc) (?:phieu|luot|xe)|luot xe|phieu sua", s) and not re.search(
             r"tien|doanh thu", s):
-        if re.search(r"thay|va |sua dien|nhot|ruot|bugi|bo thang|lam |rua|bao duong", s.replace("phieu sua", "")):
-            return Frame("unsupported", reason="đếm theo loại việc chưa được mô hình hoá")
         if not P:
             return None
-        if re.search(r"trung binh moi (?:ngay )?thu|trung binh 1 ngay", s):
-            return Frame("unsupported", reason="trung bình theo thứ chưa hỗ trợ cho sổ phiếu")
+        mw = re.search(r"\b(thu (?:hai|ba|tu|nam|sau|bay|[2-7])|chu nhat)\b", s)
+        if mw and re.search(r"trung binh|binh quan", s):
+            from ..nlu.rules import _weekday
+            if question_job(s.replace("phieu sua", "")):
+                return Frame("unsupported", reason="trung bình theo thứ của một loại việc chưa hỗ trợ")
+            return Frame("avg_weekday", [P], params={"weekday": _weekday(mw.group(1)), "metric": "order_count"},
+                         filters={"staff": mech} if mech else {}, answer_type="number")
+        job = question_job(re.sub(r"phieu sua(?: xe)?|sua xe|xe vo sua|vao sua|zo sua|vo sua", " ", s))
+        if job:
+            qual = next((w for w in ("truoc", "sau") if job == "phanh" and re.search(r"\b" + w + r"\b", s)), None)
+            return Frame("repair_job_count", [P], filters={"staff": mech} if mech else {},
+                         params={"job": job, "qual": qual}, answer_type="number")
+        if re.search(r"\bthay\b|\blam (?!duoc|dc|ra)", s.replace("phieu sua", "")):
+            return Frame("unsupported", reason="loại việc chưa nhận diện được")
         return Frame("order_count", [P], filters={"staff": mech} if mech else {}, answer_type="number")
     if mech and re.search(r"tien|doanh thu|ban", s):
         if not P:
@@ -184,6 +234,13 @@ def run(fe, fr):
     if it == "repair_repeat_vehicles":
         c = paid.groupby("plate").size()
         return Answer("number", int((c >= fr.params.get("n", 2)).sum()))
+    if it == "repair_job_count":
+        job, qual = fr.params["job"], fr.params.get("qual")
+        n = 0
+        for w in paid.get("work", []):
+            if job in job_items(w) and (not qual or re.search(r"\b" + qual + r"\b", fold(str(w)))):
+                n += 1
+        return Answer("number", n)
     if it == "repair_distinct_vehicles":
         return Answer("number", int(O.loc[O["model_key"] == fr.params["model"], "plate"].nunique()))
     if it == "repair_top_model":

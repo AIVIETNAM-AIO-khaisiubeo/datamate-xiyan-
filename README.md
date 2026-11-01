@@ -21,7 +21,8 @@ abstention.
 |---|---|---:|---:|---:|---:|
 | Train (3.000 câu, 30 shop) | agent CPU (G1 luật + coverage + selector), không LLM | 3.000 | 0 | 0 | **1.000** |
 | Train **làm nhiễu kiểu public** (bỏ dấu, Telex, viết tắt, phương ngữ, "Th7/25") | như trên | 2.990 | 0 | 10 | **0.997** |
-| Public test (1.000 câu, 14 shop) | như trên | 850 giá trị + 21 `unanswerable` | ? | 129 | chưa có đáp án |
+| Public test — bản nộp 1 | như trên | 850 giá trị + 21 `unanswerable` | ~155 | 129 | **0.561** (BTC chấm) |
+| Public test — bản 2 (sau phân tích lỗi, §7 / `docs/RESULTS.md` §2.1) | như trên | 920 giá trị + 22 `unanswerable` | ? | 58 | chưa chấm |
 
 > Kết quả train là **trong mẫu** (luật được phát triển khi phân tích lỗi trên train — không mã hoá đáp án, không
 > logic theo id). Bản nhiễu ước lượng độ bền với câu hỏi lộn xộn. Phần LLM (G2–G4) cần GPU nên mới được kiểm
@@ -81,6 +82,11 @@ làm việc nó giỏi: hiểu câu hỏi lộn xộn; nó *không* tự cộng 
   Độ tin cậy của mỗi generator theo từng intent được đo trên train với co rút Bayes (`scripts/calibrate.py`).
 * Tín hiệu rủi ro: hoà điểm ở biên top-k (đề đã loại các câu như vậy ⇒ hoà nghĩa là ta hiểu sai), giá trị phi lý,
   rulebook của split đổi luật mà engine đang cài (`datamate/rulebook.py` — kiểm tra cụm từ khoá của từng luật).
+* **Kiểm tra hình thức câu hỏi ↔ kiểu đáp án** (`datamate/nlu/consistency.py`): khi bộ luật rơi về intent rộng
+  (`revenue`, `units`…) với cách hỏi mới, đáp án *trông* hợp lệ nhưng trả lời câu khác. Hình thức câu tiếng Việt
+  ràng buộc kiểu đáp án: "… nào / ai / mô / chi" → tên, "%"/"chiếm" → phần trăm, "lần lượt / từng tháng" → danh
+  sách, "… đúng không?" → có/không, "mấy bữa/ngày" → số ngày, "nhóm X" → phải có bộ lọc nhóm. Frame mâu thuẫn ⇒
+  độ tin cậy bị chặn dưới τ ⇒ bỏ trống thay vì sai tự tin. Trên train bộ kiểm tra chặn **0** câu đúng.
 * Huấn luyện (tuỳ chọn, GPU): SFT đa nhiệm (rewrite / frame / answerability) rồi **GRPO với phần thưởng chính là PA**
   (+1/−1/0, thêm phần thưởng định dạng), đúng pipeline CoT-SFT → RL của bài báo (`training/`).
 
@@ -153,13 +159,18 @@ datamate/
   values.py        parse tiền '1tr440' '25k' '398,8604tr', ngày serial Excel / '1 thg 6 2025', số lượng '2 xe 4m3'
   textnorm.py      chuẩn hoá tiếng Việt (bỏ dấu, sửa Telex, viết tắt, teencode, phương ngữ, ngày tắt)
   ingest/          reader (header/dòng tổng) · roles (schema linking) · readme · builder (mô hình chuẩn)
-  nlu/             timeparse (luật thời gian + lịch âm) · linker · frame (DSL) · rules (G1)
+  nlu/             timeparse (luật thời gian + lịch âm) · linker (+ tên vùng miền: rán/chiên, lạc/đậu phộng…)
+                   frame (DSL) · rules (G1) · consistency (hình thức câu ↔ kiểu đáp án) · coverage (OOV)
+  domains/         repair (sổ sửa xe, phân loại việc trong ô "Làm gì") · phone (máy mới/cũ, thu máy cũ, bảo hành)
+                   books (sổ nợ tự ghi, sổ trả góp: lịch kỳ góp, quá hạn, còn lại)
   engine/          executor (luật rulebook) · answer (Frame → đáp án có kiểu)
   llm/             backend (vLLM/HF/mock) · prompts · mschema · generators (G2/G3/G4)
   select/          selector (gom nhóm + bỏ phiếu hiệu chuẩn + abstain)
   rulebook.py      đọc rulebook của split, kiểm tra luật thay đổi
   agent.py         điều phối · predict.py CLI · scorer.py chấm PA · augment.py sinh nhiễu
 scripts/           eval_rules.py · calibrate.py · debug_*.py
+                   check_consistency.py (chẩn đoán ingest không cần nhãn) · review_run.py (gom câu theo intent)
+                   check_guard.py (bộ kiểm tra hình thức chặn những câu nào) · try_q.py (chạy G1 trên vài câu)
 training/          build_sft_data.py · sft_lora.py · grpo_abstain.py
 artifacts/         reliability.json · example_bank.jsonl (sinh từ train)
 tests/             unit test (không cần dữ liệu)
@@ -170,13 +181,17 @@ Dockerfile · predict.sh · requirements*.txt
 
 * Offline hoàn toàn khi suy luận; trọng số nằm trong image.
 * Không mã hoá cứng đáp án, không logic theo `id` câu hỏi hay `business_id`: mọi xử lý suy ra từ file + README + rulebook của split.
-* Chỉ dùng **train** để phát triển luật, hiệu chuẩn, few-shot và dữ liệu SFT. Không huấn luyện trên public/private test.
+* Chỉ dùng **train** (có nhãn) để hiệu chuẩn, few-shot và dữ liệu SFT. Không huấn luyện trên public/private test.
+  Câu hỏi public (**không có nhãn**) chỉ được đọc để phân tích lỗi phân tích cú pháp; mọi sửa đổi là luật tổng quát
+  (cách nói thời gian, phương ngữ, kiểu câu, sổ chuyên ngành mô tả trong README của shop), không gắn với câu hay shop
+  cụ thể, và luôn được kiểm lại trên train (PA phải giữ 1.000, bộ kiểm tra hình thức không chặn câu train nào).
 * Tất định: luật thuần Python; LLM nhiệt độ 0, seed cố định; sắp xếp ổn định (tie-break theo mã).
 * Ghi log từng câu (id, đáp án, thời gian, bằng chứng) theo yêu cầu Rule 8.
 
 ## 7. Hạn chế & hướng tiếp
 
-* Public/private có loại hình mới (điện thoại, sửa xe, mẹ & bé…) với sổ chuyên biệt; đã mô hình hoá sổ sửa xe, thu máy cũ, sổ bảo hành, size/hãng; chưa có sổ góp & sổ nợ tự ghi
-  và luật ngành riêng: G1 chỉ phủ phần chung; phần còn lại dựa vào G2–G4 hoặc bỏ trống.
+* Public/private có loại hình mới (điện thoại, sửa xe, mẹ & bé…) với sổ chuyên biệt; đã mô hình hoá sổ sửa xe (kể cả
+  đếm theo loại việc), thu máy cũ, sổ bảo hành, size/hãng, sổ nợ tự ghi và sổ trả góp. Shop không có cột nhóm hàng mà câu
+  hỏi nêu "nhóm X" thì bỏ trống. Cách hỏi hoàn toàn mới vẫn dựa vào G2–G4 hoặc bỏ trống (bộ kiểm tra hình thức).
 * Số liệu LLM chưa đo do môi trường phát triển không có GPU; chạy `training/` + `scripts/calibrate.py` trên log
   GPU để hiệu chuẩn lại `artifacts/reliability.json` trước khi nộp.

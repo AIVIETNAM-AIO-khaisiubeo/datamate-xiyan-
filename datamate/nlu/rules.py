@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple
 from ..ingest.builder import Biz
 from ..textnorm import fold, fold_words, normalize_question, repair_fold
 from .frame import Frame
-from .linker import Linker
+from .linker import Linker, dialect
 from .timeparse import LunarCalendar, Period, TimeInfo, month_period, parse_time, prev_month, tet_period
 
 
@@ -183,6 +183,13 @@ class RuleParser:
                 names.add(n)
         for n in sorted(names, key=len, reverse=True):
             out = out.replace(" " + n + " ", " _e_ ")
+        # names linked through regional variants ('mực rán' ~ 'mực chiên') are found in the dialect form only
+        dout = dialect(out)
+        if dout != out:
+            for n in sorted(names, key=len, reverse=True):
+                dout = dout.replace(" " + n + " ", " _e_ ")
+            if dout.count("_e_") > out.count("_e_"):
+                return dout
         return out
 
     # ------------------------------------------------------------------ unanswerable probes
@@ -229,6 +236,10 @@ class RuleParser:
         pkey, pname = self._product(q)
         P = self._period(ti)
         k = _topk(s)
+        from ..domains import books
+        fr = books.parse(self, s, q, ti, today)
+        if fr is not None:
+            return fr
         if self.b.flags.get("repair"):
             from ..domains import repair
             fr = repair.parse(self, s, q, ti, P)
@@ -266,12 +277,12 @@ class RuleParser:
         if ma and _has(s, r"bao nhieu khach|may khach|so khach|co bao nhieu"):
             return Frame("customers_on_street", params={"street": ma.group(1).strip()}, answer_type="number")
         # ---------------------------------------------------------------- price effect
-        if _has(s, r"tang gia|len gia|doi gia|tang len|tang tu") and _has(s, r"\d+ ngay") and _has(s, r"thay doi|tang hay giam|nhieu hay it|so|chenh|%|phan tram"):
+        if _has(s, r"tang gia|len gia|doi gia|tang len|tang tu|\blen (?:gia )?\d") and _has(s, r"\d+ ngay") and _has(s, r"thay doi|tang hay giam|nhieu hay it|so|chenh|%|phan tram"):
             if not pkey:
                 return None
             d = ti.explicit_dates[0] if ti.explicit_dates else None
-            m = re.search(r"len (?:gia )?(\d{1,3}(?:[.,]\d{3})+|\d+)\s*(?:d|dong)", s)
-            newp = float(re.sub(r"[.,]", "", m.group(1))) if m else None
+            m = re.search(r"len (?:gia )?(\d{1,3}(?:[.,]\d{3})+|\d+)\s*(k|d|dong|nghin|ngan)\b", s)
+            newp = float(re.sub(r"[.,]", "", m.group(1))) * (1000 if m.group(2) in ("k", "nghin", "ngan") else 1) if m else None
             n = ti.window_days or int(re.search(r"(\d+) ngay", s).group(1))
             avg = _has(s, r"trung binh moi ngay|binh quan moi ngay")
             return Frame("price_effect", filters={"product": pkey}, params={"date": d, "new_price": newp, "n": n, "avg": avg},
@@ -282,7 +293,7 @@ class RuleParser:
                 return None
             return Frame("price_on", filters={"product": pkey}, params={"date": ti.explicit_dates[0]}, answer_type="number")
         # ---------------------------------------------------------------- purchases
-        if _has(s, r"nhap tru (?:so )?ban|chenh lech nhap|nhap (?:va|voi) ban|so nhap tru"):
+        if _has(s, r"nhap(?: vao| vo| ve)? tru (?:\w+ ){0,3}ban|chenh lech nhap|nhap (?:va|voi) ban|so nhap tru"):
             if not pkey or not P:
                 return None
             u = self.lk.unit_after(q, ("bao nhieu", "may", "duoc bao nhieu", "duoc", "la bao nhieu", "nhieu")) or _unit_tail(s)
@@ -301,14 +312,19 @@ class RuleParser:
                 if _has(s, r"tin cay|uy tin|tot nhat|chat luong"):
                     return Frame("unanswerable", reason="Không có dữ liệu đánh giá nhà cung cấp", answer_type="unanswerable")
                 return Frame("top_suppliers", [P], by=by, k=k or 1, answer_type="string" if not k or k == 1 else "list")
-        if _has(s, r"nhap hang|phieu nhap|tien nhap|hang nhap|nhap vao|tien hang nhap") and not _has(s, r"ban"):
+        if pkey and P and _has(s, r"\bnhap (?:ve|vao|vo)? ?(?:duoc |tong cong |tat ca )?(?:bao nhieu|may|bn)\b|\bso (?:\w+ )?nhap (?:ve|vao)?\b|\btong (?:\w+ )?nhap\b") \
+                and not _has(s, r"\bban\b|tien|gia|chi phi"):
+            u = self.lk.unit_after(s, ("bao nhieu", "may", "bn")) or _unit_tail(s)
+            return Frame("purchased_qty", [P], filters={"product": pkey}, unit=u, answer_type="number")
+        if _has(s, r"nhap hang|phieu nhap|tien nhap|hang nhap|nhap vao|tien hang nhap|danh hang|cat hang|lay hang ve|nhap ve het|nhap het") \
+                and not _has(s, r"ban") and not pkey:
             if not P:
                 return None
             return Frame("purchase_total", [P], answer_type="number")
         # ---------------------------------------------------------------- expiry / lots
-        if _has(s, r"het han\b|han dung|han su dung|\bhsd\b"):
+        if _has(s, r"het han\b|han dung|han su dung|\bhsd\b|can date"):
             snap = ti.snapshot or (ti.explicit_dates[0] if ti.explicit_dates else today)
-            if _has(s, r"gan het han nhat|het han som nhat|han som nhat"):
+            if _has(s, r"gan het han nhat|het han som nhat|han som nhat|can date nhat|gan date nhat"):
                 if not pkey:
                     return None
                 return Frame("nearest_expiry", snapshot=snap, filters={"product": pkey}, answer_type="date")
@@ -334,7 +350,7 @@ class RuleParser:
             return Frame("expiring", snapshot=snap, params={"end": end, "what": what},
                          answer_type="number" if what != "product_list" else "list")
         # ---------------------------------------------------------------- inventory
-        if _has(s, r"het hang") and _has(s, r"may|bao nhieu|so|dem"):
+        if _has(s, r"het hang|dut hang|chay hang|het sach hang") and _has(s, r"may|bao nhieu|so|dem"):
             snap = ti.snapshot or (ti.explicit_dates[0] if ti.explicit_dates else today)
             return Frame("out_of_stock", snapshot=snap, answer_type="number")
         if _has(s, r"(gia tri|\bdang\b|bao nhieu tien|tien hang|tien von).*\b(kho|ton)\b|\b(kho|ton)\b.*(gia von|dang bao nhieu tien|gia tri)") and not _has(s, r"het han|han dung"):
@@ -364,7 +380,8 @@ class RuleParser:
             if not cs or len(cs[0][1]) != 1 or not P:
                 return None
             return Frame("debt_flow", [P], filters={"customer": cs[0][1][0]}, answer_type="list")
-        if _has(s, r"thu hoi.*(cong )?no|tra (bot )?no|tra no|khach tra (bot )?no|thu no|tien khach tra bot|tra bot no") and not _has(s, r"con no"):
+        if _has(s, r"thu hoi.*(cong )?no|tra (bot )?no|tra no|khach tra (bot )?no|thu no|tien khach tra bot|tra bot no|"
+                   r"doi (?:duoc )?(?:bao nhieu |bn )?(?:tien )?no|thu (?:duoc )?(?:bao nhieu |bn )?tien no") and not _has(s, r"con no"):
             if not P:
                 return None
             return Frame("repayments", [P], answer_type="number")
@@ -467,23 +484,35 @@ class RuleParser:
                 return Frame("unanswerable", reason="Không có dữ liệu đánh giá nhân viên", answer_type="unanswerable")
             by = "days" if _has(s, r"cham chi|nhieu ngay") else "revenue"
             return Frame("top_staff", [P], by=by, k=k or 1, answer_type="string" if not k or k == 1 else "list")
-        if _has(s, r"khach|\bai\b|nguoi mua") and _has(s, r"nhieu nhat|cao nhat|top|lon nhat|\bnao\b.*nhat|\bai\b.*nhat|nhieu \w+ nhat|nhieu \w+ \w+ nhat") and not _has(s, r"\bno\b"):
+        # which product (by revenue / orders / qty / profit) — 'trong nhóm X, mặt hàng nào thu về nhiều tiền nhất'
+        if _has(s, r"\b(?:mat hang|san pham|sp|mon|hang)\b (?:\w+ ){0,3}?(?:nao|mo|gi|chi)\b|\bla (?:mat hang|san pham|mon|sp) nao\b") and \
+                _has(s, r"nhat|nhut|top") and not re.search(r"hãng|hiệu", ql) and \
+                not _has(s, r"khach (?:hang )?(?:nao|mo)|\bai\b|la ai|nhan vien|\btho\b|ngay nao|thang nao|nha cung cap|\bncc\b|\bno\b"):
             if not P:
                 return None
+            by = "profit" if _has(s, r"\blai\b|\bloi\b|loi nhuan") else \
+                "orders" if _has(s, r"ua chuong|nhieu don|nhieu hoa don") else \
+                "revenue" if _has(s, r"nhieu tien|doanh thu|doanh so|tien nhat|thu ve") else "qty"
+            return Frame("top_products", [P], by=by, k=k or 1, filters=f,
+                         answer_type="list" if (k and k > 1) else "string")
+        if _has(s, r"khach|\bai\b|nguoi mua") and _has(s, r"nhieu nhat|cao nhat|top|lon nhat|\bnao\b.*nhat|\bai\b.*nhat|nhieu \w+ nhat|nhieu \w+ \w+ nhat|"
+                                                    r"sop nhat|trung thanh nhat|doi y nhat") and not _has(s, r"\bno\b"):
+            by = None
             if _has(s, r"nhieu don|nhieu lan|so don|nhieu hoa don|nhieu bill"):
                 by = "orders"
             elif _has(s, r"trung thanh|nhieu ngay"):
                 by = "days"
-            elif _has(s, r"sop"):
+            elif _has(s, r"\bsop\b"):
                 by = "aov"
             elif _has(s, r"doi y|huy nhieu|nhieu don huy"):
                 by = "cancels"
             elif _has(s, r"chi tieu|tien|mua nhieu|chi nhieu|tong tien"):
                 by = "revenue"
-            else:
-                return None
-            return Frame("top_customers", [P], by=by, k=k or 1,
-                         answer_type="list" if (k and k > 1) else "string")
+            if by is not None:
+                if not P:
+                    return None
+                return Frame("top_customers", [P], by=by, k=k or 1,
+                             answer_type="list" if (k and k > 1) else "string")
         # ---------------------------------------------------------------- best day / month
         if _has(s, r"ngay nao|ngay ma") and _has(s, REV + r"|ban dat|nhieu don|dat khach"):
             if not P:
@@ -497,11 +526,13 @@ class RuleParser:
             return Frame("best_month", months, answer_type="date")
         # ---------------------------------------------------------------- monthly list / increasing
         months = _months_list(ti)
-        if _has(s, r"tang lien tuc|luon cao hon|luon hon|thang sau .* (?:cao )?hon thang truoc|tang deu|cao hon thang .* va thang|cung cao hon"):
+        if _has(s, r"tang lien tuc|luon cao hon|luon hon|thang sau .* (?:cao )?hon thang truoc|tang deu|cao hon thang .* va thang|cung cao hon|"
+                   r"cao hon .* cao hon"):
             if len(months) < 2:
                 return None
-            return Frame("increasing", months, answer_type="boolean")
-        if len(months) >= 2 and _has(s, REV) and _has(s, r"lan luot|moi thang|tung thang|ghi \d so|theo thu tu|tu thang cu|moi ky|liet ke"):
+            return Frame("increasing", sorted(months, key=lambda p: p.start), answer_type="boolean")
+        if len(months) >= 2 and _has(s, REV) and (_has(s, r"lan luot|moi thang|tung thang|ghi \d so|theo thu tu|tu thang cu|moi ky|liet ke") or
+                                                  not _has(s, r"so voi|\bso\b|\bvs\b|hon|kem|chenh|tang|giam|nao|%|phan tram|tong|cong")):
             return Frame("monthly_list", months, answer_type="list")
         # ---------------------------------------------------------------- cancel
         if _has(s, r"\bhuy\b"):
@@ -517,7 +548,7 @@ class RuleParser:
         # ---------------------------------------------------------------- growth / comparisons
         is_pct = _has(s, r"%|phan tram")
         if _has(s, r"thay doi|tang hay giam|hon hay kem|chenh|tang/giam|tang giam|cao hay thap|nhieu hay it|so voi|so vs|len hay xuong|"
-                   r"\bso (?:thang|ky|tuan|quy|nam|cung|ca)\b|\bso\b.*\b(?:truoc|lien truoc|ngoai)\b") and is_pct:
+                   r"\bso (?:thang|ky|tuan|quy|nam|cung|ca)\b|\bso\b.*\b(?:truoc|lien truoc|ngoai)\b|ca chieu .*\bhon\b.*ca sang|ca sang .*\bhon\b.*ca chieu") and is_pct:
             metric = "order_count" if _has(s, r"so don|bao nhieu don|may don|so bill") else "revenue"
             # shift comparison
             if _has(s, r"ca chieu") and _has(s, r"ca sang"):
@@ -650,7 +681,7 @@ def _multi_filters(s: str) -> List[dict]:
 
 
 _SLOT_STOP = set("""cua hang tiem quan shop minh toi cho hoi xem giup gium check tong cong doanh thu thu ve duoc bao nhieu
-tien la vay nhi a trong ban ra nay do the ha z ta roi ca cac moi don hang hoa chiec cai""".split())
+tien la vay nhi a trong ban ra nay do the ha z ta roi ca cac moi don hang hoa chiec cai sop""".split())
 
 
 def _product_slot(t: str) -> bool:

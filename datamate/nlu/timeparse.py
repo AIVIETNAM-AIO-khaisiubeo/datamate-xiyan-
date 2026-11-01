@@ -187,21 +187,23 @@ def parse_time(q: str, today: D, cal: Optional[LunarCalendar] = None) -> TimeInf
         if a and b:
             add(mr, Period(a, b, f"{a}..{b}", "range"))
     # 'tu thang A/Y den thang B/Y' month ranges -> list of months
-    mr = re.search(r"tu thang (\d{1,2})/(\d{4}) (?:den|toi|qua|-)(?: het)? thang (\d{1,2})/(\d{4})", s)
+    mr = re.search(r"(?<![/\d])(?:tu )?(?:thang )?(\d{1,2})/(\d{4}) (?:den|toi|qua|-)(?: het)?(?: thang)? (\d{1,2})/(\d{4})\b", s)
+    if mr and (int(mr.group(4)), int(mr.group(3))) <= (int(mr.group(2)), int(mr.group(1))):
+        mr = None
     month_range = None
     if mr:
         y1, m1, y2, m2 = int(mr.group(2)), int(mr.group(1)), int(mr.group(4)), int(mr.group(3))
         month_range = (y1, m1, y2, m2)
         add(mr, Period(D(y1, m1, 1), month_end(y2, m2), "months", "month_range"))
     # 'N thang lien nhau ket thuc o thang M/Y'
-    mk = re.search(r"(\d+) thang lien (?:nhau|tiep) ket thuc (?:o|vao|tai) thang (\d{1,2})/(\d{4})", s)
+    mk = re.search(r"(\d+) thang lien (?:nhau|tiep|ke) (?:ket thuc (?:o|vao|tai)|tinh (?:toi|den)|den|toi|cho toi)(?: het)? thang (\d{1,2})/(\d{4})", s)
     if mk:
         n, m2, y2 = int(mk.group(1)), int(mk.group(2)), int(mk.group(3))
         y1, m1 = add_months(y2, m2, -(n - 1))
         add(mk, Period(D(y1, m1, 1), month_end(y2, m2), "months", "month_range"))
 
     # month lists sharing a trailing year: 'thang 9 thang 10 thang 11/2025', 'thang 5 6 7/2025', 'thang 1, 2 va 3/2026'
-    for ml in re.finditer(r"\bthang (\d{1,2})((?:\s+(?:va\s+)?(?:thang\s+)?\d{1,2}){1,5})\s*/\s*(\d{4})\b", s):
+    for ml in re.finditer(r"\bthang (\d{1,2})((?:\s+(?:va\s+)?(?:thang\s+)?\d{1,2}){1,5})\s*(?:/|\s+nam\s+)\s*(\d{4})\b", s):
         yr = int(ml.group(3))
         mons = [int(ml.group(1))] + [int(x) for x in re.findall(r"\d{1,2}", ml.group(2))]
         if all(1 <= m_ <= 12 for m_ in mons) and mons == sorted(mons):
@@ -241,13 +243,20 @@ def parse_time(q: str, today: D, cal: Optional[LunarCalendar] = None) -> TimeInf
         mo = int(mm.group(1))
         if not 1 <= mo <= 12 or any(a <= mm.start() < b for a, b, _ in spans):
             continue
-        # "3 thang" (count) is not a month name
-        if re.search(r"\d\s*$", s[:mm.start()]):
+        # "3 thang" (count) is not a month name ('thang 4 thang 5' is a list)
+        if re.search(r"\d\s*$", s[:mm.start()]) and not re.search(r"\bthang \d{1,2}\s*$", s[:mm.start()]):
             continue
         y_, m_ = resolve_month_noyear(mo, today)
         add(mm, month_period(y_, m_))
+    # 'thang M nam roi / ngoai / truoc' = month M of last year
+    for mm in re.finditer(r"\bthang (\d{1,2}) (?:cua )?nam (?:roi|ngoai|truoc)\b", s):
+        mo = int(mm.group(1))
+        if 1 <= mo <= 12 and not any(a <= mm.start() < b for a, b, _ in spans):
+            add(mm, month_period(today.year - 1, mo))
     # relative expressions
     rel = [
+        (r"\btu (?:dau thang|mung 1|ngay 1|ngay dau thang)(?: nay)? (?:den|toi) (?:het )?(?:hom nay|bua nay|nay|gio)\b",
+         lambda: Period(today.replace(day=1), today, "this_month", "mtd", month_end(today.year, today.month))),
         (r"\b(?:ngay )?hom nay\b|\bbua nay\b|\btrong ngay hom nay\b", lambda: Period(today, today, "today", "day")),
         (r"\bhom qua\b|\bbua qua\b|\bngay hom qua\b", lambda: Period(today - dt.timedelta(1), today - dt.timedelta(1), "yesterday", "day")),
         (r"\btuan nay\b", lambda: Period(week_monday(today), today, "this_week", "week")),
@@ -265,7 +274,7 @@ def parse_time(q: str, today: D, cal: Optional[LunarCalendar] = None) -> TimeInf
         n = int(mm.group(1) or mm.group(2) or mm.group(3))
         add(mm, Period(today - dt.timedelta(n - 1), today, f"last{n}d", "range"))
     for mm in re.finditer(r"\bthang (?:truoc|roi|vua roi|vua qua)\b", s):
-        if re.search(r"(so voi|so|vs|hon|kem|cung ky)\s*(?:cung ky\s*)?$", s[:mm.start()]):
+        if re.search(r"(so voi|so|vs|hon|kem|cung ky|ngay dau|ngay cua|so ngay)\s*(?:cung ky\s*)?$", s[:mm.start()]):
             continue
         y_, m_ = prev_month(today.year, today.month)
         add(mm, month_period(y_, m_, "last_month"))
@@ -281,9 +290,9 @@ def parse_time(q: str, today: D, cal: Optional[LunarCalendar] = None) -> TimeInf
         y_ = int(mm.group(1))
         add(mm, Period(D(y_, 1, 1), D(y_, 12, 31), f"year{y_}", "year"))
     # comparisons
-    if re.search(r"cung ky (?:thang|th) (?:truoc|roi|lien truoc)", s):
+    if re.search(r"cung (?:ky|so ngay)(?: dau)?(?: cua)? (?:thang|th) (?:truoc|roi|lien truoc)", s):
         ti.mtd_compare = True
-    if re.search(r"cung ky nam (?:truoc|ngoai|roi)|cung thang nam (?:truoc|ngoai)|nam ngoai cung thang", s):
+    if re.search(r"cung ky nam (?:truoc|ngoai|roi)|cung thang (?:cua )?nam (?:truoc|ngoai|roi)|nam ngoai cung thang", s):
         ti.yoy = True
     if re.search(r"(so voi|so|vs|hon|kem|chenh)[^.]*?(thang|ky|quy|tuan) (lien )?(truoc|roi)\b|thang lien truoc|thang truoc do|ky truoc", s):
         ti.prev_period = True
@@ -295,6 +304,10 @@ def parse_time(q: str, today: D, cal: Optional[LunarCalendar] = None) -> TimeInf
             continue
         out.append(p)
         last_end, last_span = max(last_end, b), (a, b)
+    # 'tính luôn hôm nay, 7 ngày gần nhất' / 'tháng này tính đến hôm nay': 'hôm nay' only bounds a longer period
+    bound = re.search(r"\b(?:toi|den|tinh den|tinh toi|tinh luon|tinh ca|ke ca|tinh) (?:het )?(?:ngay )?(?:hom nay|bua nay|bua ni|hom ni)\b", s)
+    if len(out) > 1 and (bound or any(p.kind in ("range", "mtd", "ytd", "week") and p.end == today for p in out)):
+        out = [p for p in out if not (p.kind == "day" and p.start == today)] or out
     ti.periods = out
     # text without time
     t = s

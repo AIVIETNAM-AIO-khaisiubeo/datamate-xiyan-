@@ -51,7 +51,8 @@ def norm_status(v) -> Optional[str]:
     s = fold(str(v))
     if re.search(r"\bhuy\b|cancel|khong giao duoc|giao that bai|that bai|\bbom\b|\bboom\b|khong nhan|tu choi nhan|failed|\bfail\b|khong thanh cong", s):
         return "cancelled"
-    if re.search(r"tra hang|tra ve|doi tra|hoan tra|return|tra lai|hoan hang", s):
+    if re.search(r"tra hang|tra ve|doi tra|hoan tra|return|(?<!kiem )tra lai|hoan hang|mang tra|"
+                 r"khach tra(?! no| tien| truoc| gop| bot| du| het| \d| tre)|tra do\b", s):
         return "returned"
     if re.search(r"dang giao|shipping|van chuyen|cho giao|dang ship|delivering|dang gui|cho lay|cho xu ly|dang xu ly|pending|chua giao", s):
         return "shipping"
@@ -710,7 +711,8 @@ def _build_lines_orders(biz: Biz):
         # status written in the note column (shops without a status column)
         if O["status_n"].isna().all() and "note" in O.columns:
             O["status_n"] = O["note"].map(lambda v: norm_status(v) if (not is_blank(v) and re.search(
-                r"huy|tra|dang giao|cancel|return|ship", fold(str(v)))) else "completed")
+                r"\bhuy\b|tra hang|tra lai|khach tra|mang tra|doi tra|hoan tra|tra ve|dang giao|chua giao|"
+                r"cancel|return|ship|\bbom\b|that bai", fold(str(v)).replace("kiem tra", ""))) else "completed")
         O["status_n"] = O["status_n"].fillna("completed")
         if not biz.lot_sales.empty and "qty_returned" in biz.lot_sales.columns:
             ls = biz.lot_sales
@@ -978,7 +980,7 @@ def _build_misc(biz: Biz):
         biz.deliveries = D
 
 
-BUILDER_VERSION = "b10"
+BUILDER_VERSION = "b12"
 
 
 def load_biz(biz_dir: str, biz_id: Optional[str] = None) -> Biz:

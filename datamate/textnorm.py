@@ -133,6 +133,7 @@ _ABBR = {
     "dza": "vay", "dzi": "vay", "mun": "muon", "xo": "so", "xố": "so", "bin": "binh", "nguog": "nguong",
     "dag": "dang", "kac": "cac", "doanhthu": "doanh thu", "dthuu": "doanh thu", "bnhieu": "bao nhieu",
     "thg": "thang", "nhug": "nhung", "zo": "vao",
+    "bih": "binh", "tug": "tung", "zia": "ve", "duot": "duoc", "xau": "sau",
 }
 # filler / politeness words that carry no meaning for the parser
 _FILLERS = {"a", "ah", "ạ", "oi", "ơi", "e", "em", "anh", "chi", "ad", "admin", "alo", "ê", "he", "hen", "nhe", "nha",
@@ -155,9 +156,19 @@ def expand_tokens(tokens: List[str], vocab: Optional[Set[str]] = None) -> List[s
         r = telex_repair(t, vocab)
         if r != t and r in _ABBR:
             out.extend(_ABBR[r].split())
+        elif r == t and len(t) >= 6 and t.isalpha() and not is_syllable(t) and _split_glued(t, vocab):
+            out.extend(_split_glued(t, vocab))       # missing space: 'caonhat', 'nhieudon', 'bannhieu'
         else:
             out.append(r)
     return out
+
+
+def _split_glued(t: str, vocab: Set[str]) -> Optional[List[str]]:
+    for i in range(2, len(t) - 1):
+        a, b = t[:i], t[i:]
+        if a in vocab and b in vocab and is_syllable(a) and is_syllable(b) and len(a) >= 2 and len(b) >= 2:
+            return [a, b]
+    return None
 
 
 # ---------------------------------------------------------------- dates / numbers in questions
@@ -199,6 +210,9 @@ def canon_dates(s: str) -> str:
 
 def normalize_question(q: str, vocab: Optional[Set[str]] = None) -> str:
     """Folded, abbreviation-expanded, date-canonical form of a question."""
+    # English loanwords written phonetically ('o đờ' = order); must run before folding ('ở đó' folds the same)
+    q = re.sub(r"(?i)(?<!\w)[oô] đờ(?!\w)|\border\b", "đơn", q)
+    q = re.sub(r"(?i)(?<!\w)xi ô đi(?!\w)", "COD", q)
     s = fold(q)
     # 'dt' / 'đt': phone after 'máy / qua / chiếc / gọi', otherwise revenue (doanh thu)
     s = re.sub(r"\b(may|qua|chiec|goi|ban qua|so)\s+dt\b", r"\1 dien thoai", s)
@@ -213,7 +227,19 @@ def normalize_question(q: str, vocab: Optional[Set[str]] = None) -> str:
     s = " ".join(toks)
     s = canon_dates(s)
     s = re.sub(r"\b(bua|hom) (nao|mo)\b", "ngay nao", s)
+    s = re.sub(r"\b(may|bao nhieu|bn|bnhiu|co|so|dem) bua\b", r"\1 ngay", s)
+    s = re.sub(r"(\d+(?:[.,]\d+)?) cu\b", r"\1 trieu", s)          # '10 củ' = 10 triệu
+    s = re.sub(r"\bso doi\b", "so voi", s)                           # 'so dới' (dialect / typo of 'so với')
+    s = re.sub(r"\bnhan dien\b", "nhan vien", s)                     # 'nhân diên'
+    s = re.sub(r"\bbang duoc\b", "ban duoc", s)                      # 'báng được' (typo of 'bán')
+    # month words; 'sau' only before a year ('tháng sau' = next month folds like 'tháng sáu')
+    s = re.sub(r"\bthang (muoi mot|muoi hai|mot|hai|ba|tu|bay|tam|chin|muoi|sau(?=/| nam \d))\b(?! (?:thang|th|\d|ngay|lien))",
+               lambda m: "thang " + str(_MONTH_WORDS[m.group(1)]), s)
     return s
+
+
+_MONTH_WORDS = {"mot": 1, "hai": 2, "ba": 3, "tu": 4, "sau": 6, "bay": 7, "tam": 8, "chin": 9, "muoi": 10,
+                "muoi mot": 11, "muoi hai": 12}
 
 
 def strip_fillers(s: str) -> str:

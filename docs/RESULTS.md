@@ -39,22 +39,39 @@ Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 
 
 ## 2. Public test (1.000 câu, 14 shop) — **không có đáp án**
 
-| | Số câu |
-|---|---:|
-| Trả lời giá trị | 850 |
-| `unanswerable` (có lý do) | 21 |
-| `abstain` | 129 |
+| | Bản nộp 1 (điểm BTC **0.561**) | Bản 2 (hiện tại) |
+|---|---:|---:|
+| Trả lời giá trị | 850 | 920 |
+| `unanswerable` (có lý do) | 21 | 22 |
+| `abstain` | 129 | 58 |
 
-Theo shop (trả lời / bỏ trống): dev_001 81/6 · dev_002 38/3 · dev_003 123/6 · dev_004 85/11 · dev_005 78/9 ·
-dev_006 93/18 · dev_007 54/6 · dev_008 89/10 · dev_009 20/1 · dev_010 54/5 · dev_011 33/7 (điện thoại) ·
-dev_012 38/12 (sửa xe) · dev_013 49/8 (mẹ & bé) · dev_014 36/27 (điện thoại + trả góp/bảo hành).
+Theo shop ở bản 2 (trả lời / bỏ trống): dev_001 86/1 · dev_002 37/4 · dev_003 126/3 · dev_004 89/7 · dev_005 80/7 ·
+dev_006 103/8 · dev_007 58/2 · dev_008 93/6 · dev_009 21/0 · dev_010 55/4 · dev_011 38/2 (điện thoại) ·
+dev_012 44/6 (sửa xe) · dev_013 50/7 (mẹ & bé) · dev_014 62/1 (điện thoại + sổ nợ/sổ góp/bảo hành).
 
-Thời gian: ~90 s cho 1.000 câu trên CPU (sau khi đã có cache), ~4 phút khi nạp dữ liệu lần đầu.
+Thời gian: ~30–90 s cho 1.000 câu trên CPU (sau khi đã có cache), vài phút khi nạp dữ liệu lần đầu.
 File nộp: `submissions/public_test_rule_only.jsonl`.
 
-Bỏ trống tập trung ở các sổ chuyên biệt chưa được mô hình hoá (sổ góp, sổ nợ tự ghi, đếm theo loại việc sửa xe,
-hàng chưa giao) và câu có từ ngoài phạm vi hiểu biết của bộ luật (cơ chế *coverage*). Đây là chỗ các generator
-LLM (G2–G4) được kỳ vọng bổ sung khi chạy trên GPU.
+### 2.1 Phân tích lỗi bản 1 (không có nhãn) và các sửa đổi
+
+PA = (đúng − sai)/N nên 0.561 với 871 câu trả lời ⇒ khoảng 716 đúng / 155 sai: **độ chính xác khi trả lời ~82 %**,
+thấp hơn nhiều so với train. Đọc lại 1.000 câu public theo intent (`scripts/review_run.py`) và chẩn đoán ingest
+không cần nhãn (`scripts/check_consistency.py`) cho thấy các nhóm lỗi *tổng quát* sau (không sửa theo từng câu):
+
+| Nhóm lỗi | Ví dụ | Sửa |
+|---|---|---|
+| Trạng thái đơn đọc sai | "Khách trả" (261 đơn) không bị coi là trả hàng; ghi chú "kiểm tra lại" bị coi là trả hàng; "khách mang trả" | regex trạng thái có ranh giới từ, loại "kiểm tra" |
+| Rơi về intent `revenue` với độ tin cậy 0.985 | "nhóm X thì mặt hàng nào thu về nhiều tiền nhất", "mấy % tổng doanh thu", "th7, th8, th9 lần lượt", "mấy bữa … từ 10 củ", "… đúng vậy không?" | định tuyến đúng intent + **bộ kiểm tra hình thức câu ↔ kiểu đáp án** (`nlu/consistency.py`) |
+| Thời gian | "tính luôn hôm nay thì 7 ngày gần nhất" → chỉ hôm nay; "từ đầu tháng/mùng 1 đến hết hôm nay"; "T3/2026 tới T5/2026" thiếu tháng giữa; "tháng 7 năm rồi"; "cùng số ngày đầu tháng trước"; "tới hôm nay, đơn đặt th3" | `nlu/timeparse.py` |
+| Từ địa phương / gõ sai | "o đờ" (order), "xi ô đi" (COD), "củ" (triệu), "bữa" (ngày), "tháng ba", "so dới", "nhân diên", "caonhất" (dính chữ) | `textnorm.py` |
+| Tên món vùng miền | "mực rán" = "mực chiên", "lạc" = "đậu phộng", "cá tràu" = "cá lóc", "cát xây trát" = "cát xây tô", "cốc sạc" = "củ sạc" | `nlu/linker.py::dialect` |
+| Shop không có cột nhóm hàng mà câu nêu "nhóm X" | trả số của cả shop | bỏ trống (bộ kiểm tra hình thức) |
+| Sổ chuyên ngành chưa mô hình hoá | sổ góp, sổ nợ tự ghi (dev_014), đếm theo loại việc sửa xe, "khách sộp", "đắt khách", "đứt hàng", "cận date", số lượng nhập của một mặt hàng | `domains/books.py`, `domains/repair.py`, `nlu/rules.py` |
+| Đáp án rỗng / bằng 0 | xếp hạng trả `None`; tổng/đếm = 0 (train không có đáp án 0 cho các intent này) | bỏ trống |
+
+So với bản 1: 778 câu giữ nguyên, 141 câu đổi đáp án, 76 câu từ bỏ trống sang trả lời, 5 câu từ trả lời sang bỏ trống
+(còn lại do định tuyến lại sang intent đúng). Mọi thay đổi được kiểm lại trên train (PA giữ **1.000**, bộ kiểm tra
+hình thức chặn **0** câu train) và trên train làm nhiễu (**0.997**, 0 câu sai).
 
 **Tái lập / đa nền tảng:** `predict.sh` chạy trên Linux (WSL Ubuntu 22.04, Python 3.10, pandas 2.3, numpy 2.2) cho
 **1000/1000 đáp án giống hệt** bản Windows (Python 3.15, pandas 3.0) — phần luật là tất định.
@@ -67,6 +84,9 @@ LLM (G2–G4) được kỳ vọng bổ sung khi chạy trên GPU.
 * **Mặt hàng không liên kết được** trong câu hỏi doanh thu/số lượng ⇒ bỏ trống (tránh trả doanh thu cả shop).
 * **Hoà ở biên top-k** ⇒ bỏ trống (đề đã loại các câu hoà nên hoà = ta hiểu sai).
 * **Rulebook đổi luật** ⇒ intent phụ thuộc không còn được tin (`datamate/rulebook.py`).
+* **Hình thức câu ↔ kiểu đáp án** (`datamate/nlu/consistency.py`): "… nào/ai" mà trả số, "%" mà trả tiền, "lần lượt"
+  mà trả một số, "đúng không?" mà trả số, "nhóm X" không liên kết được, đáp án rỗng hoặc tổng/đếm = 0 ⇒ bỏ trống.
+  Kiểm bằng `scripts/check_guard.py`: chặn 0/3.000 câu train, chặn các câu sai tự tin ở public bản 1.
 
 ## 4. Tái lập
 

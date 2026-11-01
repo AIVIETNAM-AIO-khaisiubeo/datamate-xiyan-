@@ -93,6 +93,14 @@ class FrameExecutor:
         ex, it = self.ex, fr.intent
         P = fr.periods[0] if fr.periods else None
         f = fr.filters
+        from ..domains import books
+        books.attach(ex.b)
+        if it == "instal":
+            return books.run_instal(self, fr)
+        if it in ("debt_total", "debtor_count", "debt_aging", "debt_overdue", "top_debtors") and getattr(ex.b, "_debtbook", None):
+            a = books.run_debt(self, fr)
+            if a is not None:
+                return a
         if it.startswith("phone_"):
             from ..domains import phone
             return phone.run(self, fr)
@@ -206,6 +214,15 @@ class FrameExecutor:
             return Answer("number", ex.avg_purchase_price(f["product"], P, fr.unit))
         if it == "purchase_minus_sales":
             return Answer("number", self._purchase_minus_sales(fr))
+        if it == "purchased_qty":
+            key = f["product"]
+            PL = ex.purchase_lines(P)
+            v = PL.loc[PL["pkey"] == key, "base_qty"].sum()
+            if fr.unit:
+                fac = ex.unit_factor(key, fr.unit)
+                if fac and fac != 1:
+                    v = v / fac
+            return Answer("number", _num(v))
         if it == "stock":
             k = f["product"]
             v = ex.stock_at(k, fr.snapshot)

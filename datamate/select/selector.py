@@ -91,7 +91,7 @@ class Selector:
                     r = min(r, 0.35)
                 if c.answer.meta.get("tie"):
                     r = min(r, 0.3)
-                if c.answer.meta.get("oov"):
+                if c.answer.meta.get("oov") or c.answer.meta.get("conflict"):
                     # the question mentions concepts the parse ignored (unseen business vocabulary)
                     r = min(r, self.oov_cap)
                 s += logit(r)

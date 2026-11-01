@@ -27,7 +27,7 @@ thanks thank cam on ban oi bé be chi anh em ad sep boss mi mk mik
 # general business-question words the rule parser understands even if no train question used them
 GENERAL = set("""
 xuong thap giua sanh chot thuong gio ua chuong chinh voucher ship diem trieu xong du mung xep dan lon nho
-order sop dong khach nguong set khung cao
+order sop dong khach nguong set khung cao cat danh date can dut vo muon nhanh
 """.split())
 
 

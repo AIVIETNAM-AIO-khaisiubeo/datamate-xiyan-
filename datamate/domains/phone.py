@@ -53,7 +53,8 @@ def parse(rp, s: str, q: str, ti, P) -> Optional["Frame"]:
     b = rp.b
     if not b.flags.get("phone"):
         return None
-    phones = bool(re.search(r"dien thoai|chiec|\bmay\b(?! cu thu)", s)) and not re.search(r"phu kien(?! ra)", s.replace("khong tinh phu kien", "").replace("bo phu kien", "").replace("tru phu kien", ""))
+    phones = bool(re.search(r"dien thoai|chiec|\bmay\b(?! cu thu)", s)) and not re.search(
+        r"phu kien(?! ra)", re.sub(r"(?:khong (?:tinh|ke|tinh ca|ke ca)|bo|tru|ngoai|chua ke|chua tinh) phu kien", "", s))
     W = getattr(b, "_warranty", None)
     if re.search(r"\bbao hanh\b", s) and W is not None and not W.empty:
         if not P:
@@ -71,7 +72,13 @@ def parse(rp, s: str, q: str, ti, P) -> Optional["Frame"]:
         if re.search(r"(?:bao nhieu|may|bn|so) (?:luot|lan|may|chiec)|nhan bao hanh|toi bao hanh|mang .* bao hanh", s):
             return Frame("phone_warranty_count", [P], answer_type="number")
         return Frame("unsupported", reason="câu hỏi bảo hành chưa được mô hình hoá")
-    if re.search(r"thu may cu|may cu thu lai|tien may cu|tru vao don", s) and not re.search(r"khach phai tra|phai tra", s):
+    if re.search(r"may (?:moi|cu)", s) and re.search(r"%|phan tram|chiem", s) and re.search(r"doanh thu|tien ban|tien", s) \
+            and not re.search(r"thu (?:lai |mua )?may cu|may cu thu lai", s):
+        if not P:
+            return None
+        return Frame("phone_rev_share", [P], params={"grp": "used" if re.search(r"may cu", s) and not re.search(r"may moi", s) else "new"},
+                     answer_type="percent")
+    if re.search(r"thu (?:lai |mua )?may cu|may cu thu lai|tien may cu|tru vao don", s) and not re.search(r"khach phai tra|phai tra", s):
         if not P:
             return None
         if re.search(r"%|phan tram|chiem", s):
@@ -107,8 +114,27 @@ def parse(rp, s: str, q: str, ti, P) -> Optional["Frame"]:
         grp = "used" if re.search(r"may cu|dien thoai cu", s) and not re.search(r"may moi", s) else \
             "new" if re.search(r"may moi", s) and not re.search(r"may cu", s) else "phones"
         pk, _ = rp._product(q)
-        return Frame("phone_units", [P], filters={"product": pk} if pk else {}, params={"grp": grp}, answer_type="number")
+        params = {"grp": grp}
+        if not pk:
+            mdl = _model_in(b, s)
+            if mdl:
+                params["model"] = mdl
+        return Frame("phone_units", [P], filters={"product": pk} if pk else {}, params=params, answer_type="number")
     return None
+
+
+def _model_in(b, s: str) -> Optional[str]:
+    """Longest phone model line ('iPhone 16 Pro Max') named in the question; variants differ by storage / colour."""
+    names = {n for c in getattr(b, "_names_by_key", {}).values() for n in c}
+    if not b.products.empty and "name" in b.products.columns:
+        names |= set(b.products["name"].dropna().astype(str))
+    best = None
+    for n in names:
+        m = model_of(n)
+        fm = " " + fold(m) + " "
+        if len(fm) > 4 and fm in " " + s + " " and (best is None or len(m) > len(best)):
+            best = m
+    return best
 
 
 def _grp_keys(ex, grp: str):
@@ -182,7 +208,16 @@ def run(fe, fr):
         sub = L[L["pkey"].isin(_grp_keys(ex, fr.params.get("grp", "phones")))]
         if fr.filters.get("product"):
             sub = L[L["pkey"] == fr.filters["product"]]
+        elif fr.params.get("model"):
+            mdl = fold(fr.params["model"])
+            sub = phones[phones["pkey"].map(lambda k: fold(model_of(ex.pname(k))) == mdl)]
         return Answer("number", _num(sub["base_qty"].sum()))
+    if it == "phone_rev_share":
+        tot = phones["amount"].sum()
+        if tot == 0:
+            raise Unanswerable("không có máy bán ra")
+        part = L[L["pkey"].isin(_grp_keys(ex, fr.params["grp"]))]["amount"].sum()
+        return Answer("percent", r2(part / tot * 100))
     if it == "phone_avg_price":
         q = phones["base_qty"].sum()
         if q == 0:

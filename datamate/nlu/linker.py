@@ -16,6 +16,19 @@ def _fw(s: str) -> str:
     return " " + fold_words(s) + " "
 
 
+# North/South (and dialect) names of the same dish / item; applied to both the shop's names and the question
+_DIALECT = [(r"\bran\b", "chien"), (r"\blac\b", "dau phong"), (r"\bdau phu\b", "dau hu"), (r"\bca trau\b", "ca loc"),
+            (r"\btrat\b", "to"), (r"\blon\b", "heo"), (r"\bngo\b", "bap"), (r"\bmi chinh\b", "bot ngot"),
+            (r"\bxi dau\b", "nuoc tuong"), (r"\bcoc sac\b", "cu sac"), (r"\bhoa qua\b", "trai cay"),
+            (r"\bpho mat\b", "pho mai"), (r"\bdua chuot\b", "dua leo")]
+
+
+def dialect(s: str) -> str:
+    for rx, rep in _DIALECT:
+        s = re.sub(rx, rep, s)
+    return s
+
+
 class Linker:
     def __init__(self, biz: Biz):
         self.b = biz
@@ -101,10 +114,23 @@ class Linker:
     # ------------------------------------------------------------------
     def products(self, q: str) -> List[Tuple[str, List[str], int]]:
         """[(matched folded name, keys, position)] longest-first, non-overlapping."""
-        s = _fw(q)
+        found = self._match(_fw(q), self.prod_sorted, self.prod_names)
+        if not found:
+            # regional names ('mực rán' = 'mực chiên', 'cốc sạc' = 'củ sạc')
+            if not hasattr(self, "_dial_names"):
+                dn: Dict[str, List[str]] = defaultdict(list)
+                for n, ks in self.prod_names.items():
+                    dn[dialect(n)].extend(ks)
+                self._dial_names = {n: sorted(set(ks)) for n, ks in dn.items()}
+                self._dial_sorted = sorted(self._dial_names, key=len, reverse=True)
+            found = self._match(" " + dialect(fold_words(q)) + " ", self._dial_sorted, self._dial_names)
+        return found
+
+    @staticmethod
+    def _match(s: str, names_sorted, names) -> List[Tuple[str, List[str], int]]:
         found = []
         used = [False] * len(s)
-        for name in self.prod_sorted:
+        for name in names_sorted:
             if len(name) < 3:
                 continue
             pat = " " + name + " "
@@ -113,7 +139,7 @@ class Linker:
                 if not any(used[i + 1:i + len(pat) - 1]):
                     for j in range(i + 1, i + len(pat) - 1):
                         used[j] = True
-                    found.append((name, self.prod_names[name], i))
+                    found.append((name, names[name], i))
                     break
                 i = s.find(pat, i + 1)
         found.sort(key=lambda x: x[2])

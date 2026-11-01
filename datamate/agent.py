@@ -28,6 +28,7 @@ from .nlu.rules import RuleParser
 from .nlu.timeparse import LunarCalendar
 from .rulebook import parse_rulebook
 from .select.selector import Candidate, Selector
+from .textnorm import fold
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -165,6 +166,11 @@ class DataMateAgent:
             return None, Answer("abstain")
         fe = FrameExecutor(Executor(biz, today), self.cal)
         a = fe.run(fr)
+        # question form vs. frame answer type
+        from .nlu.consistency import check as form_check
+        why = form_check(fr.params.get("nq", ""), fr, a)
+        if why:
+            a.meta["conflict"] = why
         # semantic coverage: words the parse could not account for => do not trust it blindly
         if self.vocab is not None and fr.intent != "unanswerable":
             from .nlu.coverage import unexplained_tokens
@@ -176,7 +182,9 @@ class DataMateAgent:
                 voc = voc | DOMAIN_VOCAB
             if biz.flags.get("phone"):
                 from .domains.phone import DOMAIN_VOCAB as PV
-                voc = voc | PV
+                # model lines are named without storage / colour ('iPhone 16 Pro Max'): their words are shop words
+                names = {n for c in getattr(biz, "_names_by_key", {}).values() for n in c}
+                voc = voc | PV | {w for n in names for w in fold(n).split()}
             shop_words = list(rp.lk.units) + list(rp.lk.groups) + list(rp.lk.cust_groups)
             P = biz.products
             if not P.empty and "brand" in P.columns:
