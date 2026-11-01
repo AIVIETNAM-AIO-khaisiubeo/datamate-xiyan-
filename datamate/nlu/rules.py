@@ -116,9 +116,15 @@ class RuleParser:
             f["rx"] = False
         elif _has(s, r"ke don|theo don"):
             f["rx"] = True
-        m = re.search(r"\bsize\s+(m|l|s|xl|xxl)\b", s)
+        m = re.search(r"\bsize\s+(nb|xxxl|xxl|xl|m|l|s|\d{1,2})\b", s)
         if m:
             f["size"] = m.group(1).upper()
+        m = re.search(r"\bsua (?:bot |cong thuc )?(?:so) (\d{1,2})\b", s)
+        if m:
+            f["size"] = m.group(1)
+        br = self.lk.brand(s)
+        if br:
+            f["brand"] = br
         g = self.lk.group(q) or self.lk.group(self._qr) or self.lk.group(s)
         if g:
             f["group"] = g
@@ -144,6 +150,9 @@ class RuleParser:
                 if len(keys) == 1:
                     return keys[0], name
                 return None, name
+        fz = self.lk.product_fuzzy(self._qr, 0.9)
+        if fz and len(fz[1]) == 1 and len(fz[0].split()) >= 3:
+            return fz[1][0], fz[0]
         return None, None
 
     # ------------------------------------------------------------------ main
@@ -167,6 +176,11 @@ class RuleParser:
         for text in (q, self._qr, s):
             names |= {n for n, _, _ in self.lk.products(text)}
             names |= {n for n, _, _ in self.lk.customers(text)}
+        fs = " " + s + " "
+        for n in list(self.lk.staff) + list(self.lk.suppliers) + list(self.lk.groups) + list(self.lk.cust_groups) + \
+                list(self.lk.ingredients) + list(getattr(self.lk, "_extra_names", [])):
+            if n and (" " + n + " ") in fs:
+                names.add(n)
         for n in sorted(names, key=len, reverse=True):
             out = out.replace(" " + n + " ", " _e_ ")
         return out
@@ -215,6 +229,16 @@ class RuleParser:
         pkey, pname = self._product(q)
         P = self._period(ti)
         k = _topk(s)
+        if self.b.flags.get("repair"):
+            from ..domains import repair
+            fr = repair.parse(self, s, q, ti, P)
+            if fr is not None:
+                return fr
+        if self.b.flags.get("phone"):
+            from ..domains import phone
+            fr = phone.parse(self, s, q, ti, P)
+            if fr is not None:
+                return fr
 
         # ---------------------------------------------------------------- newer generic intents
         if _has(s, r"gio cao diem|khung gio nao|gio nao .*(?:dong|nhieu don|dong khach|dat khach)"):
@@ -226,7 +250,7 @@ class RuleParser:
             if not P:
                 return None
             wd = _weekday(mw.group(1))
-            metric = "order_count" if _has(s, r"\bdon\b|bill") and not _has(s, r"doanh thu|tien") else "revenue"
+            metric = "order_count" if _has(s, r"\bdon\b|bill|\bluot\b|\bphieu\b|\bxe\b") and not _has(s, r"doanh thu|tien") else "revenue"
             return Frame("avg_weekday", [P], params={"weekday": wd, "metric": metric}, answer_type="number")
         if _has(s, r"voucher|vau cho|dung diem|tru diem|doi diem|phi ship|phi giao hang|tien ship") and \
                 _has(s, r"bao nhieu|bn|tong|het|duoc|giam"):
@@ -404,7 +428,13 @@ class RuleParser:
                 return None
             return Frame("gross_profit", [P], filters=f, answer_type="number")
         # ---------------------------------------------------------------- rankings
-        if _has(s, r"ban chay|ban nhieu nhat|hot nhat|best ?seller|chay nhat|ban duoc nhieu nhat|ban dc nhieu nhat|ban ra nhieu nhat|ban nhieu|ua chuong") and not _has(s, r"ngay nao|thang nao|nhan vien|khach"):
+        ql = q.lower()
+        if re.search(r"hãng nào|hiệu nào|thương hiệu nào|hãng gì", ql) and _has(s, r"nhieu nhat|chay nhat|cao nhat|nhieu \w+ nhat|nhieu \w+ nhut"):
+            if not P:
+                return None
+            return Frame("top_brands", [P], filters={k_: v for k_, v in f.items() if k_ in ("group", "size")},
+                         answer_type="string")
+        if _has(s, r"ban chay|ban nhieu nhat|hot nhat|best ?seller|chay nhat|ban duoc nhieu nhat|ban dc nhieu nhat|ban ra nhieu nhat|ban nhieu|ua chuong|ban (?:duoc |dc |ra )?nhieu \w+ nhat") and not _has(s, r"ngay nao|thang nao|nhan vien|khach"):
             if not P:
                 return None
             by = "orders" if _has(s, r"ua chuong|nhieu don nhat") else "qty"
@@ -466,7 +496,8 @@ class RuleParser:
             return Frame("cancel_count", [P], filters={k_: v for k_, v in f.items() if k_ in ("shift", "channel", "pay")}, answer_type="number")
         # ---------------------------------------------------------------- growth / comparisons
         is_pct = _has(s, r"%|phan tram")
-        if _has(s, r"thay doi|tang hay giam|hon hay kem|chenh|tang/giam|tang giam|cao hay thap|nhieu hay it|so voi|so vs|\bso\b") and is_pct:
+        if _has(s, r"thay doi|tang hay giam|hon hay kem|chenh|tang/giam|tang giam|cao hay thap|nhieu hay it|so voi|so vs|len hay xuong|"
+                   r"\bso (?:thang|ky|tuan|quy|nam|cung|ca)\b|\bso\b.*\b(?:truoc|lien truoc|ngoai)\b") and is_pct:
             metric = "order_count" if _has(s, r"so don|bao nhieu don|may don|so bill") else "revenue"
             # shift comparison
             if _has(s, r"ca chieu") and _has(s, r"ca sang"):
@@ -488,6 +519,15 @@ class RuleParser:
             if len(ti.periods) >= 2:
                 return Frame("growth", ti.periods[:2], params={"metric": metric, "mode": "explicit"}, filters=f, answer_type="percent")
             return Frame("growth", [P], params={"metric": metric, "mode": "prev"}, filters=f, answer_type="percent")
+        # ---------------------------------------------------------------- share of units (diapers by size / brand ...)
+        if is_pct and (f.get("size") or f.get("brand")) and _has(s, r"chiem|ti trong|ti le|trong tong|tren tong|\bso (?:bich|lon|hop|goi|cai|chai|chiec|may)|tinh theo so"):
+            if not P:
+                return None
+            base = f.get("group") or self.lk.group_loose(s)
+            if not base:
+                return None
+            num = {k_: v for k_, v in f.items() if k_ in ("size", "brand")}
+            return Frame("units_share", [P], filters=num, params={"base_group": base}, answer_type="percent")
         # ---------------------------------------------------------------- shares
         if is_pct and _has(s, r"chiem|ti trong|dong gop|bang .*tong|ti le|tren tong|trong tong|chiem bao"):
             if not P:
@@ -499,7 +539,7 @@ class RuleParser:
                 return None
             return Frame("share", [P], filters=part, answer_type="percent")
         # ---------------------------------------------------------------- average order value
-        if _has(s, r"trung binh (?:moi|mot|tren mot|1) (?:don|bill|hoa don)|gia tri trung binh|binh quan (?:moi|mot|1) (?:don|bill|hoa don)|trung binh .*moi don|moi don .*trung binh|binh quan .*don"):
+        if _has(s, r"trung binh (?:moi|mot|tren mot|1) (?:don|bill|hoa don)|gia tri trung binh|binh quan (?:moi|mot|1) (?:don|bill|hoa don)|trung binh .*moi don|moi don .*trung binh|binh quan .*don|moi don .*binh quan|(?:mot|1|moi) don .*binh quan"):
             if not P:
                 return None
             ff = {k_: v for k_, v in f.items() if k_ in ("cust_group", "shift", "channel", "pay", "staff")}
@@ -521,7 +561,11 @@ class RuleParser:
             if pkey:
                 ff["product"] = pkey
                 return Frame("units", [P], filters=ff, unit=unit, answer_type="number")
-            if "size" in ff or "group" in ff:
+            if ("size" in ff or "brand" in ff) and "group" not in ff:
+                g_ = self.lk.group_loose(s)
+                if g_:
+                    ff["group"] = g_
+            if "size" in ff or "group" in ff or "brand" in ff:
                 return Frame("units", [P], filters=ff, answer_type="number")
             if _has(s, r"cong moi|tinh moi|tat ca|cac mat hang|moi mat hang|moi mon|moi loai|tong cong|cong tat ca") or True:
                 ff["base_unit"] = unit
@@ -533,6 +577,8 @@ class RuleParser:
             ff = dict(f)
             ff["product"] = pkey
             return Frame("units", [P], filters=ff, unit=u, answer_type="number")
+        if _has(s, r"khach o [a-z].* hay (?:khach )?o [a-z]|\bben nao\b|nhieu hon hay|hon hay khach"):
+            return Frame("unsupported", reason="so sánh hai nhóm khách theo nơi ở chưa hỗ trợ")
         # ---------------------------------------------------------------- revenue split by channel / payment
         multi = _multi_filters(s)
         if len(multi) >= 2 and _has(s, REV):
@@ -546,6 +592,9 @@ class RuleParser:
             ff = dict(f)
             if pkey:
                 ff["product"] = pkey
+            elif not any(ff.get(k_) is not None for k_ in ("group", "ingredient", "rx", "cust_group", "channel", "pay", "shift", "staff", "street", "size", "brand")) \
+                    and _product_slot(ti.text_wo_time):
+                return Frame("unsupported", reason="câu hỏi nêu một mặt hàng không tìm thấy trong dữ liệu")
             if _has(s, r"khach") and not ff.get("cust_group"):
                 cs = self.lk.customers(q)
                 if cs and len(cs[0][1]) == 1:
@@ -578,6 +627,24 @@ def _multi_filters(s: str) -> List[dict]:
     if len(hits) >= 2 and len(kinds) == 1:
         return [h[1] for h in hits]
     return []
+
+
+_SLOT_STOP = set("""cua hang tiem quan shop minh toi cho hoi xem giup gium check tong cong doanh thu thu ve duoc bao nhieu
+tien la vay nhi a trong ban ra nay do the ha z ta roi ca cac moi don hang hoa chiec cai""".split())
+
+
+def _product_slot(t: str) -> bool:
+    """True when a revenue question names something to sell ('bán <X> được', 'tiền bán <X>', 'mặt hàng <X>',
+    'doanh thu của <X>') that no linker resolved."""
+    t = " " + t + " "
+    for rx in (r" ban (.+?) (?:duoc|dc|thu ve|thu duoc)\b", r" tien ban (.+?) (?:la|thang|duoc|$)", r" mat hang (.+?) (?:thu ve|ban|la|$)",
+               r" doanh thu (?:cua|cho) (.+?) (?:trong|la|thang|$)"):
+        m = re.search(rx, t)
+        if m:
+            words = [w for w in m.group(1).split() if w not in _SLOT_STOP and not w.isdigit()]
+            if len(words) >= 1:
+                return True
+    return False
 
 
 def _weekday(w: str) -> int:

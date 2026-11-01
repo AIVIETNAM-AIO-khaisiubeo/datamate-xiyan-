@@ -88,8 +88,16 @@ class FrameExecutor:
         ex, it = self.ex, fr.intent
         P = fr.periods[0] if fr.periods else None
         f = fr.filters
+        if it.startswith("phone_"):
+            from ..domains import phone
+            return phone.run(self, fr)
+        if it.startswith("repair_"):
+            from ..domains import repair
+            return repair.run(self, fr)
         if it == "unanswerable":
             return Answer("unanswerable", reason=fr.reason)
+        if it == "unsupported":
+            return Answer("abstain", reason=fr.reason)
         if it == "revenue":
             return Answer("number", ex.revenue(P, f))
         if it == "revenue_multi":
@@ -104,6 +112,28 @@ class FrameExecutor:
             return Answer("number", ex.aov(P, f))
         if it == "units":
             return Answer("number", ex.units(P, f, fr.unit))
+        if it == "top_brands":
+            Pb = ex.b.products
+            if Pb.empty or "brand" not in Pb.columns or Pb["brand"].isna().all():
+                raise Unanswerable("danh mục không ghi hãng")
+            bm = dict(zip(Pb["key"], Pb["brand"]))
+            L = ex.lines(ex.clip(P), f)
+            s = L.groupby(L["pkey"].map(bm))["base_qty"].sum()
+            s = s[s.index.notna()]
+            if s.empty:
+                raise Unanswerable("không có hàng bán")
+            top = s.sort_values(ascending=False)
+            if len(top) > 1 and abs(top.iloc[0] - top.iloc[1]) < 1e-9:
+                return Answer("abstain", reason="tie")
+            return Answer("string", str(top.index[0]))
+        if it == "units_share":
+            Pc = ex.clip(P)
+            base = {"group": fr.params["base_group"]}
+            tot = ex.lines(Pc, base)["base_qty"].sum()
+            if tot == 0:
+                raise Unanswerable("không có hàng của nhóm trong kỳ")
+            part = ex.lines(Pc, dict(base, **f))["base_qty"].sum()
+            return Answer("percent", r2(part / tot * 100))
         if it == "share":
             Pc = ex.clip(P)
             part = ex.revenue(Pc, f)

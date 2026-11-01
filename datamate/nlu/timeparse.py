@@ -200,6 +200,13 @@ def parse_time(q: str, today: D, cal: Optional[LunarCalendar] = None) -> TimeInf
         y1, m1 = add_months(y2, m2, -(n - 1))
         add(mk, Period(D(y1, m1, 1), month_end(y2, m2), "months", "month_range"))
 
+    # month lists sharing a trailing year: 'thang 9 thang 10 thang 11/2025', 'thang 5 6 7/2025', 'thang 1, 2 va 3/2026'
+    for ml in re.finditer(r"\bthang (\d{1,2})((?:\s+(?:va\s+)?(?:thang\s+)?\d{1,2}){1,5})\s*/\s*(\d{4})\b", s):
+        yr = int(ml.group(3))
+        mons = [int(ml.group(1))] + [int(x) for x in re.findall(r"\d{1,2}", ml.group(2))]
+        if all(1 <= m_ <= 12 for m_ in mons) and mons == sorted(mons):
+            for m_ in mons:
+                spans.append((ml.start(), ml.end(), month_period(yr, m_)))
     # single dates
     for md in _DATE_RE.finditer(s):
         d = _mk_date(md.group(1), md.group(2), md.group(3))
@@ -280,14 +287,14 @@ def parse_time(q: str, today: D, cal: Optional[LunarCalendar] = None) -> TimeInf
         ti.yoy = True
     if re.search(r"(so voi|so|vs|hon|kem|chenh)[^.]*?(thang|ky|quy|tuan) (lien )?(truoc|roi)\b|thang lien truoc|thang truoc do|ky truoc", s):
         ti.prev_period = True
-    spans.sort(key=lambda x: x[0])
-    # de-overlap
-    out, last_end = [], -1
+    spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    # de-overlap (a month list contributes several periods with the same span)
+    out, last_end, last_span = [], -1, None
     for a, b, p in spans:
-        if a < last_end:
+        if a < last_end and (a, b) != last_span:
             continue
         out.append(p)
-        last_end = b
+        last_end, last_span = max(last_end, b), (a, b)
     ti.periods = out
     # text without time
     t = s

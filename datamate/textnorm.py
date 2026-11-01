@@ -126,6 +126,13 @@ _ABBR = {
     "dau": "dau", "toi": "toi",
     "lun": "luon", "lum": "luon", "nhiu": "nhieu",
     "qa": "qua", "ntn": "nhu the nao", "sao": "sao",
+    # frequent typing slips / teen-code of common words
+    "trog": "trong", "trg": "trong", "nuot": "luot", "lout": "luot", "nhta": "nhat", "nhatt": "nhat", "nhaat": "nhat",
+    "bna": "ban", "bnaf": "ban", "lne": "len", "nheiu": "nhieu", "nhieeu": "nhieu", "dup": "giup", "dum": "giup",
+    "cog": "cong", "tog": "tong", "duco": "duoc", "dduoc": "duoc", "ngui": "nguoi", "nguoj": "nguoi", "zi": "vay",
+    "dza": "vay", "dzi": "vay", "mun": "muon", "xo": "so", "xố": "so", "bin": "binh", "nguog": "nguong",
+    "dag": "dang", "kac": "cac", "doanhthu": "doanh thu", "dthuu": "doanh thu", "bnhieu": "bao nhieu",
+    "thg": "thang", "nhug": "nhung", "zo": "vao",
 }
 # filler / politeness words that carry no meaning for the parser
 _FILLERS = {"a", "ah", "ạ", "oi", "ơi", "e", "em", "anh", "chi", "ad", "admin", "alo", "ê", "he", "hen", "nhe", "nha",
@@ -192,8 +199,10 @@ def canon_dates(s: str) -> str:
 
 def normalize_question(q: str, vocab: Optional[Set[str]] = None) -> str:
     """Folded, abbreviation-expanded, date-canonical form of a question."""
-    s = q.replace("đt", " dien thoai ").replace("Đt", " dien thoai ").replace("ĐT", " dien thoai ")
-    s = fold(s)
+    s = fold(q)
+    # 'dt' / 'đt': phone after 'máy / qua / chiếc / gọi', otherwise revenue (doanh thu)
+    s = re.sub(r"\b(may|qua|chiec|goi|ban qua|so)\s+dt\b", r"\1 dien thoai", s)
+    s = re.sub(r"\bdt\b", "doanh thu", s)
     s = s.replace("%", " % ")
     # glue errors like "nhieudon" are rare; split letters from digits only for unit-ish tokens
     s = re.sub(r"(?<=[a-z])(?=\d{1,2}/\d{2,4})", " ", s)
@@ -203,6 +212,7 @@ def normalize_question(q: str, vocab: Optional[Set[str]] = None) -> str:
     toks = expand_tokens(toks, vocab)
     s = " ".join(toks)
     s = canon_dates(s)
+    s = re.sub(r"\b(bua|hom) (nao|mo)\b", "ngay nao", s)
     return s
 
 

@@ -323,6 +323,7 @@ def build_biz(biz_dir: str, biz_id: Optional[str] = None) -> Biz:
               raw=raw_typed, log=log)
     biz._cust_name, biz._pname, biz._pcode, biz._pbase, biz._drug = {}, {}, {}, {}, {}
     biz._aliases = {}
+    biz._tradein = cat("tradein")
     al = cat("aliases")
     if not al.empty and "alias" in al.columns and "product_name" in al.columns:
         for a_, n_, g_ in zip(al["alias"], al["product_name"], al.get("product_group", [None] * len(al))):
@@ -573,6 +574,10 @@ def _build_lines_orders(biz: Biz):
         # toppings written in the same cell as the drink: "Latte (M) + 2 Thạch cà phê (14.000đ)"
         if "product_name" in L.columns and L["product_name"].map(lambda v: isinstance(v, str) and " + " in v).any():
             L = _split_toppings(biz, L)
+        # service-ticket books (vehicle / work / mechanic columns)
+        if "vehicle" in L.columns:
+            from ..domains import repair
+            L = repair.enrich(biz, L)
         # line kind
         L["kind"] = L["product_name"].map(_line_kind) if "product_name" in L.columns else "item"
         # product key
@@ -625,11 +630,16 @@ def _build_lines_orders(biz: Biz):
             bq.append(float(q) * (f if f else 1.0))
         L["base_qty"] = bq
         # money
-        for c in ("amount", "unit_price", "line_discount", "cost_unit"):
+        for c in ("amount", "unit_price", "line_discount", "cost_unit", "qty", "base_qty"):
             if c not in L.columns:
                 L[c] = np.nan
-        miss = L["amount"].isna() & L["qty"].notna() & L["unit_price"].notna()
-        L.loc[miss, "amount"] = L.loc[miss, "qty"] * L.loc[miss, "unit_price"] - L.loc[miss, "line_discount"].fillna(0)
+            L[c] = pd.to_numeric(L[c], errors="coerce").astype(float)
+        miss = (L["amount"].isna() & L["qty"].notna() & L["unit_price"].notna()).to_numpy()
+        if miss.any():
+            amt = L["amount"].to_numpy(copy=True)
+            amt[miss] = (L["qty"].to_numpy()[miss] * L["unit_price"].to_numpy()[miss]
+                         - np.nan_to_num(L["line_discount"].to_numpy()[miss]))
+            L["amount"] = amt
         # time of order
         if "datetime" not in L.columns:
             L["datetime"] = None
@@ -652,6 +662,7 @@ def _build_lines_orders(biz: Biz):
     # ---------------------------------------------------------------- derive / merge orders
     if O.empty and has_lines and L["order_id"].notna().any():
         agg_cols = [c for c in ORDER_LEVEL if c in L.columns and c != "order_id"]
+        agg_cols += [c for c in ("plate", "model_key", "model_raw", "warranty", "work") if c in L.columns]
         first = L[L["order_id"].notna()].groupby("order_id", sort=False)[agg_cols + ["datetime"] if "datetime" not in agg_cols else agg_cols].first()
         O = first.reset_index()
         O["_derived"] = True
@@ -756,6 +767,11 @@ def _build_lines_orders(biz: Biz):
         else:
             O["revenue"] = O["goods_total"] if "goods_total" in O.columns else np.nan
             O["has_lines"] = False
+        if has_lines and "product_group" in L.columns:
+            from ..domains import phone
+            if phone.is_phone_shop(biz, L):
+                biz.flags["phone"] = True
+                O = phone.enrich_orders(biz, O, getattr(biz, "_tradein", None))
         # amount the customer must pay for the whole order (debt base)
         due = None
         if "order_total" in O.columns and O["order_total"].notna().any():
@@ -961,7 +977,7 @@ def _build_misc(biz: Biz):
         biz.deliveries = D
 
 
-BUILDER_VERSION = "b7"
+BUILDER_VERSION = "b9"
 
 
 def load_biz(biz_dir: str, biz_id: Optional[str] = None) -> Biz:

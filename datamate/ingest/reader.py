@@ -170,15 +170,30 @@ def drop_total_and_note_rows(t: RawTable, id_cols: List[str]) -> int:
     return n
 
 
+def _xlsx_sheets(path: str):
+    """Yield (sheet_name, rows); python-calamine (fast) with an openpyxl fallback."""
+    try:
+        from python_calamine import CalamineWorkbook
+        wb = CalamineWorkbook.from_path(path)
+        for sn in wb.sheet_names:
+            sh = wb.get_sheet_by_name(sn)
+            try:
+                rows = sh.to_python(skip_empty_area=False)
+            except TypeError:
+                rows = sh.to_python()
+            yield sn, rows
+        return
+    except ImportError:
+        pass
+    import openpyxl
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    for ws in wb.worksheets:
+        yield ws.title, [list(r) for r in ws.iter_rows(values_only=True)]
+
+
 def read_xlsx(path: str) -> List[RawTable]:
-    from python_calamine import CalamineWorkbook
-    wb = CalamineWorkbook.from_path(path)
     out = []
-    for sn in wb.sheet_names:
-        try:
-            rows = wb.get_sheet_by_name(sn).to_python(skip_empty_area=False)
-        except Exception:
-            continue
+    for sn, rows in _xlsx_sheets(path):
         t = _rows_to_table(rows, os.path.basename(path), sn, "xlsx")
         if t is not None and len(t.df.columns) >= 2:
             out.append(t)

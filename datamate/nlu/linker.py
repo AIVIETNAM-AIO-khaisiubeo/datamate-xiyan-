@@ -159,6 +159,32 @@ class Linker:
                         best = (fg, g)
         return best[1] if best else None
 
+    def brand(self, q: str) -> Optional[str]:
+        P = self.b.products
+        if P.empty or "brand" not in P.columns:
+            return None
+        s = _fw(q)
+        best = None
+        for br in P["brand"].dropna().unique():
+            fb = fold_words(str(br))
+            if len(fb) >= 3 and (" " + fb + " ") in s and (best is None or len(fb) > len(fold_words(best))):
+                best = str(br)
+        return best
+
+    def group_loose(self, q: str) -> Optional[str]:
+        """Group named without the word 'nhóm' ('bỉm' -> 'bỉm tã', 'sữa bột')."""
+        s = _fw(q)
+        firsts = {}
+        for fg, g in self.groups.items():
+            if (" " + fg + " ") in s:
+                return g
+            w = fg.split()[0] if fg else ""
+            firsts.setdefault(w, []).append(g)
+        for w, gs in firsts.items():
+            if len(w) >= 3 and len(gs) == 1 and (" " + w + " ") in s:
+                return gs[0]
+        return None
+
     def cust_group(self, q: str) -> Optional[str]:
         s = _fw(q)
         best = None

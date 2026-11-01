@@ -19,7 +19,7 @@ from .reader import RawTable
 # ----------------------------------------------------------------------------- kinds
 KINDS = ["sales", "orders", "payments", "products", "units", "stock", "purchases", "purchase_lines",
          "lots", "lot_sales", "deliveries", "debt_terms", "price_history", "expenses", "customers",
-         "drugs", "returns", "tables", "stock_card", "staff", "suppliers", "shift_report", "aliases", "other"]
+         "drugs", "returns", "tables", "stock_card", "staff", "suppliers", "shift_report", "aliases", "tradein", "other"]
 
 
 def _k(*names: str) -> List[str]:
@@ -232,6 +232,8 @@ SYN: Dict[str, Dict[str, List[str]]] = {
         "balance": _k("TonCuoi"),
     },
     "tables": {},
+    "tradein": {"order_id": _k("Trừ vào (STT sổ bán)", "Trừ vào", "STT sổ bán"), "trade_in": _k("Giá thu", "Tiền thu máy"),
+                "date": _k("Ngày", "Ngày thu"), "customer_name": _k("Khách"), "imei": _k("IMEI"), "product_name": _k("Máy thu", "Máy")},
     "aliases": {"alias": _k("Ghi tắt", "Viết tắt", "Tên viết tắt"), "product_name": _k("Tên hàng", "Tên đầy đủ", "Tên"),
                 "product_group": _k("Loại", "Loại hàng", "Nhóm")},
     "shift_report": {
@@ -487,6 +489,8 @@ def classify(t: RawTable, readme_cols: Optional[Dict[str, str]] = None) -> str:
         return "stock_card"
     if has("MaPhieuTra", "NgayGioTra"):
         return "returns"
+    if has("Giá thu") and has("Trừ vào (STT sổ bán)", "Trừ vào", "STT sổ bán"):
+        return "tradein"
     if has("Ghi tắt", "Viết tắt", "Tên viết tắt") and len(cols) <= 5:
         return "aliases"
     if has("Hoạt chất", "ThanhPhanChinh") and len(cols) <= 5:

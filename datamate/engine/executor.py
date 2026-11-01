@@ -188,8 +188,23 @@ class Executor:
             rxk = {k for k, (a, rx) in dm.items() if rx is True}
             L = L[L["pkey"].isin(rxk)] if f["rx"] else L[~L["pkey"].isin(rxk)]
         if f.get("size"):
-            sz = f["size"].lower()
-            L = L[L["pkey"].map(lambda k: bool(re.search(r"\(\s*%s\s*\)\s*$" % re.escape(sz), self.b.product_name(k).lower())))]
+            sz = str(f["size"]).lower()
+            P = self.b.products
+            if not P.empty and "size" in P.columns and P["size"].notna().any():
+                # rulebook (mẹ & bé): size / milk number comes from the catalogue column only
+                def _sz(v):
+                    return re.sub(r"^(size|so|co)", "", fold_key(str(v)))
+                keys = {k for k, v in zip(P["key"], P["size"]) if isinstance(v, str) and _sz(v) == _sz(sz)}
+                keys |= {k for k, v in zip(P["key"], P["size"]) if isinstance(v, (int, float)) and str(v).rstrip("0").rstrip(".") == sz}
+                L = L[L["pkey"].isin(keys)]
+            else:
+                L = L[L["pkey"].map(lambda k: bool(re.search(r"\(\s*%s\s*\)\s*$" % re.escape(sz), self.b.product_name(k).lower())))]
+        if f.get("brand"):
+            P = self.b.products
+            if P.empty or "brand" not in P.columns:
+                raise Unanswerable("không có hãng trong danh mục")
+            keys = {k for k, v in zip(P["key"], P["brand"]) if isinstance(v, str) and fold_key(v) == fold_key(f["brand"])}
+            L = L[L["pkey"].isin(keys)]
         if f.get("base_unit"):
             u = fold_key(f["base_unit"])
             L = L[L["pkey"].map(lambda k: fold_key(self.base_unit_of(k) or "") == u)]
@@ -247,7 +262,7 @@ class Executor:
     # ------------------------------------------------------------------ revenue & orders
     def revenue(self, p: Period, filt: Optional[dict] = None) -> int:
         f = filt or {}
-        line_f = any(f.get(k) is not None for k in ("product", "group", "ingredient", "rx", "size", "base_unit"))
+        line_f = any(f.get(k) is not None for k in ("product", "group", "ingredient", "rx", "size", "base_unit", "brand"))
         if line_f:
             L = self.lines(p, f)
             return money(L["amount"].sum())
@@ -262,7 +277,7 @@ class Executor:
         if not self.has_orders:
             raise Unanswerable("sổ không ghi mã đơn nên không đếm được số đơn")
         f = filt or {}
-        line_f = {k: v for k, v in f.items() if k in ("product", "group", "ingredient", "rx", "size")}
+        line_f = {k: v for k, v in f.items() if k in ("product", "group", "ingredient", "rx", "size", "brand")}
         if status == "valid":
             O = self.orders(p, True, {k: v for k, v in f.items() if k not in line_f})
         elif status == "cancelled":
@@ -383,7 +398,12 @@ class Executor:
         if "staff" not in O.columns or O["staff"].isna().all():
             raise Unanswerable("không có nhân viên bán")
         O = O[O["staff"].notna()]
-        s = O.groupby("staff")["revenue"].sum() if by == "revenue" else O.groupby("staff")["date"].nunique()
+        if by == "revenue":
+            s = O.groupby("staff")["revenue"].sum()
+        elif by == "tickets":
+            s = O.groupby("staff").size()
+        else:
+            s = O.groupby("staff")["date"].nunique()
         items = [(k, float(v)) for k, v in s.items()]
         items.sort(key=lambda kv: (-round(kv[1], 6), kv[0]))
         return items

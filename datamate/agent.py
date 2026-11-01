@@ -41,6 +41,7 @@ def default_config() -> dict:
                 "max_model_len": 16384, "gpu_memory_utilization": 0.88, "enable_thinking": False},
         "bank_path": os.path.join(ROOT, "artifacts", "example_bank.jsonl"),
         "reliability_path": os.path.join(ROOT, "artifacts", "reliability.json"),
+        "vocab_path": os.path.join(ROOT, "artifacts", "known_vocab.json"),
         "tau": float(os.environ.get("DATAMATE_TAU", "0.6")),
         "time_budget_s": float(os.environ.get("DATAMATE_TIME_BUDGET", str(5.5 * 3600))),
         "use_g2": True, "use_g3": True, "use_g4": True,
@@ -59,6 +60,8 @@ class DataMateAgent:
         self.rulebook = parse_rulebook(self.rulebook_text)
         self.cal = LunarCalendar(os.path.join(split_dir, "calendar.csv"))
         self.selector = Selector(self.cfg["reliability_path"], tau=self.cfg["tau"])
+        from .nlu.coverage import load_vocab
+        self.vocab = load_vocab(self.cfg.get("vocab_path"))
         self.t_start = time.time()
         self.backend = None
         self._llm_ready = False
@@ -161,7 +164,27 @@ class DataMateAgent:
         if fr is None:
             return None, Answer("abstain")
         fe = FrameExecutor(Executor(biz, today), self.cal)
-        return fr, fe.run(fr)
+        a = fe.run(fr)
+        # semantic coverage: words the parse could not account for => do not trust it blindly
+        if self.vocab is not None and fr.intent != "unanswerable":
+            from .nlu.coverage import unexplained_tokens
+            nq = fr.params.get("nq", "")
+            masked = rp._mask_entities(" " + nq + " ", question)
+            voc = self.vocab
+            if biz.flags.get("repair"):
+                from .domains.repair import DOMAIN_VOCAB
+                voc = voc | DOMAIN_VOCAB
+            if biz.flags.get("phone"):
+                from .domains.phone import DOMAIN_VOCAB as PV
+                voc = voc | PV
+            shop_words = list(rp.lk.units) + list(rp.lk.groups) + list(rp.lk.cust_groups)
+            P = biz.products
+            if not P.empty and "brand" in P.columns:
+                shop_words += [str(x) for x in P["brand"].dropna().unique()]
+            oov = unexplained_tokens(masked, voc, shop_words)
+            if oov:
+                a.meta["oov"] = oov
+        return fr, a
 
     # ------------------------------------------------------------------ LLM stage
     def _llm_stage(self, biz, rp, items, cands, logs):

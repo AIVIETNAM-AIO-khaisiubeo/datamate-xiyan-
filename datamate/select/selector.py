@@ -50,9 +50,12 @@ class Candidate:
 
 
 class Selector:
-    def __init__(self, reliability_path: Optional[str] = None, tau: float = 0.6, lam: float = 0.6):
+    def __init__(self, reliability_path: Optional[str] = None, tau: float = 0.6, lam: float = 0.6,
+                 oov_cap: float = 0.3):
         self.tau = tau
         self.lam = lam
+        self.oov_cap = oov_cap
+        self.unseen_prior = 0.7
         self.rel: Dict[str, Dict[str, float]] = {}
         if reliability_path and os.path.exists(reliability_path):
             with open(reliability_path, encoding="utf-8") as fh:
@@ -63,7 +66,8 @@ class Selector:
         if intent and intent in g:
             return g[intent]
         if "__all__" in g:
-            return g["__all__"]
+            # an intent never validated on train: implemented from the rulebook text only
+            return min(g["__all__"], self.unseen_prior)
         return DEFAULT_RELIABILITY.get(gen, 0.5)
 
     def select(self, cands: List[Candidate], trusted: Dict[str, bool] = None) -> (Answer, Dict):
@@ -87,6 +91,9 @@ class Selector:
                     r = min(r, 0.35)
                 if c.answer.meta.get("tie"):
                     r = min(r, 0.3)
+                if c.answer.meta.get("oov"):
+                    # the question mentions concepts the parse ignored (unseen business vocabulary)
+                    r = min(r, self.oov_cap)
                 s += logit(r)
             others = set()
             for k2, m2 in groups.items():
