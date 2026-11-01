@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.xlsx binary
+*.sqlite binary
+*.pkl binary
