@@ -99,7 +99,7 @@ data/
     └── calendar.csv
 ```
 
-> Repo này đã kèm sẵn hai split trong `data/train` và `data/public_test` (clone xong là chạy được). Nếu dùng bản repo không có dữ liệu, giải nén dữ liệu của ban tổ chức theo đúng cấu trúc trên. `public_test` không có `answers.jsonl`. Kiểm tra lại quy định chia sẻ dữ liệu của cuộc thi trước khi để repo ở chế độ public.
+> Repo này đã kèm sẵn hai split trong `data/train` và `data/public_test` (clone xong là chạy được).
 
 ### Bước 3 — Kiểm thử nhanh trên CPU
 
