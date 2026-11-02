@@ -160,7 +160,7 @@ Các bảng nghiệp vụ chuẩn bao gồm đơn hàng, dòng bán, danh mục 
 | **G_select** | Selection model chọn một SQL trong các ứng viên đã tái tổ chức | Một phiếu bầu thêm cho selector, không bỏ qua ngưỡng abstain |
 
 **Code:** `datamate/nlu/rules.py`, `datamate/llm/generators.py`, `datamate/llm/sql_pipeline.py`, `datamate/select/selection_model.py`.  
-`ExampleBank` (TF-IDF) lấy few-shot từ train; G4 lấy few-shot SQL **đã kiểm chứng bằng thực thi** (`artifacts/sql_silver.jsonl`, đúng định dạng của từng generator).
+
 
 ### 3.4. Business Engine
 
@@ -190,7 +190,7 @@ Với ứng viên SQL, selector còn **đọc nội dung SQL** (`datamate/select
 | **Algorithm 3** — de-formalize, gom nhóm theo kết quả, sắp xếp liên nhóm/nội nhóm, đồng thuận ≥ ⌈\|L\|/2⌉ thì đưa hết, không thì mỗi nhóm một SQL ngắn nhất, `M_c(Q, S_un, E, L')` | Như paper; `M_c` dùng template chọn ứng viên của XiYan; lựa chọn của nó là **một phiếu** trong selector có hiệu chuẩn, không thay ngưỡng abstain (khác paper vì metric phạt câu sai) | `datamate/select/selection_model.py`, `datamate/select/selector.py` |
 | **Multi-task fine-tuning** (Text-to-SQL, question inference, evidence inference, self-refine) + **multi-format** + dữ liệu chọn listwise với near-miss | Sinh từ SQL đã kiểm chứng trên train: 7 loại bản ghi, negative "near-miss" bằng **controlled modification** (`sql_mutations.py`); xuất cả định dạng `alibaba/XiYan-SQLTraining` | `training/build_sql_sft.py`, `scripts/build_sql_silver.py` |
 
-**Điều chỉnh bắt buộc vì luật cuộc thi** (khác paper có chủ đích):
+**Điều chỉnh cho cuộc thi**:
 
 - **≤ 15B tham số cho *mọi* model, offline:** không có model embedding riêng (Qwen3-14B đã chiếm 14,8B), nên similarity dùng TF-IDF n-gram ký tự. `M_s`, generator và `M_c` cùng là một Qwen3-14B. Paper dùng GPT-4o, 4 model Qwen2.5-Coder-32B fine-tune và một selection model 7B, tức nhiều model riêng biệt.
 - **Đa dạng generator:** hiện là *một* model với 3 định dạng SQL qua prompt. Đây chưa phải các generator fine-tune riêng như paper, và chúng **không** được tính là phiếu độc lập. Muốn đi xa hơn thì train **một** model đa nhiệm, đa định dạng (định dạng chọn bằng chỉ dẫn trong prompt) để vẫn 14,8B. Adapter LoRA riêng cho từng định dạng phải được cộng vào tổng tham số (`scripts/count_params.py`).
