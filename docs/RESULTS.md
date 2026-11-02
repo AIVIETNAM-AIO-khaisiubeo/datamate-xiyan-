@@ -145,4 +145,3 @@ Giống xu hướng trong paper: S1 chính xác hơn (ít cột), S2 recall cao 
 **Validation theo business** (`scripts/validate.py`, 5 fold, log G1): PA 0,9997, Brier 0,0011, ECE 0,022 ở τ = 0,6.
 Kết quả lạc quan vì luật G1 viết trên toàn bộ train; quy trình này dành cho generator LLM sau khi có log GPU.
 
-**Hồi quy:** train vẫn PA 1,000. File public chế độ CPU **giống hệt từng byte** bản trước, vì G4 chỉ chạy khi có LLM.
