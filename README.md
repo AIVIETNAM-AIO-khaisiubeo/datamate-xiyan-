@@ -1,6 +1,5 @@
 # DataMate-XiYan
 
-**Neuro-symbolic, multi-generator agent for Vietnamese question answering over business tables**  
 *Zalo AI Challenge 2026 — DataMate track*
 
 DataMate-XiYan trả lời câu hỏi tiếng Việt đời thường trực tiếp từ dữ liệu kinh doanh **CSV, Excel và SQLite**. Hệ thống kết hợp **bộ phân tích luật (rule-based semantic parser)**, các **LLM generators lấy cảm hứng từ XiYan-SQL**, một bộ thực thi xác định và cơ chế **abstention** nhằm tối ưu **Penalized Accuracy (PA)**.
