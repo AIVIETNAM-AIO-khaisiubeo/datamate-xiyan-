@@ -97,3 +97,66 @@ python scripts/eval_noise.py data/train 1 0.7                                   
 python -m datamate.predict --data data/public_test --out runs/public/submission.jsonl --llm none
 python scripts/build_artifacts.py data/train && python scripts/calibrate.py <eval dump> artifacts/reliability.json
 ```
+
+## 5. Thành phần XiYan-SQL — đo trên train, không cần LLM (2026-11-03)
+
+Các số dưới đây là **trong mẫu** (thuật ngữ của Schema Filter, luật G1 và bộ biên dịch frame→SQL được viết khi đọc
+train). Chúng kiểm chứng các thành phần làm đúng việc; chúng **không** đo generalization và **không** đo phần LLM.
+
+**Silver SQL** (`scripts/build_sql_silver.py`): frame G1 đúng đáp án → SQL ở 3 định dạng → thực thi trên view → giữ
+nếu kết quả bằng đáp án vàng. 1.689 câu biên dịch được, **1.671** câu có SQL đã kiểm chứng (98,9 %).
+
+| intent | frame đúng | biên dịch | kiểm chứng |
+|---|---:|---:|---:|
+| revenue | 810 | 669 | 669 |
+| order_count | 180 | 180 | 180 |
+| aov | 169 | 169 | 169 |
+| share | 143 | 84 | 84 |
+| cancel_rate | 140 | 139 | 139 |
+| best_day | 126 | 112 | 112 |
+| cancel_count | 100 | 100 | 100 |
+| top_products | 96 | 87 | 87 |
+| top_customers | 87 | 86 | 69 |
+| purchase_total | 41 | 41 | 40 |
+| monthly_list | 22 | 22 | 22 |
+
+**Schema Filter** (`scripts/eval_schema_filter.py`, bộ chọn cột heuristic, 1.671 câu):
+
+| schema | recall cột trung bình | giữ đủ mọi cột của SQL đúng | số cột trung bình |
+|---|---:|---:|---:|
+| S_rtrv (chỉ truy hồi) | 0,568 | 5,4 % | 11,2 |
+| S1 (vòng 1 + PFKey + cột nghiệp vụ) | 0,960 | **91,5 %** | 11,1 |
+| S2 (vòng 2) | 0,998 | **99,6 %** | 16,9 |
+| full | 1,000 | 100 % | 42,3 |
+
+Giống xu hướng trong paper: S1 chính xác hơn (ít cột), S2 recall cao hơn. Ba thay đổi quan trọng nhất:
+- bổ sung cặp tên ↔ khoá của thực thể (`product_name` ↔ `product_key`);
+- thêm đường lexicon (đồng nghĩa → cột);
+- luôn giữ cột điều kiện nghiệp vụ và cột ngày.
+
+**SQL checks** (`scripts/eval_sql_checks.py`): **0 / 5.013** SQL đúng bị báo động nhầm. Tỉ lệ phát hiện near-miss làm đổi
+đáp án:
+
+| mutation | phát hiện |
+|---|---:|
+| bỏ `is_valid` | 999 / 1.074 (93 %) |
+| lệch một tháng | 1.644 / 1.645 (100 %) |
+| chặn trên `<` bỏ ngày cuối | 1.381 / 1.394 (99 %) |
+| JOIN nhân bản dòng | 759 / 759 (100 %) |
+| `total_due` thay doanh thu | 330 / 348 (95 %) |
+| sai `LIMIT` | 94 / 94 (100 %) |
+
+**Dữ liệu SFT** (`training/build_sql_sft.py --n-aug 1`): 20.379 bản ghi.
+
+| task | số bản ghi |
+|---|---:|
+| `nl2sql_base`, `nl2sql_cte`, `nl2sql_alias` | 3.342 mỗi loại |
+| `question_inference` | 1.671 |
+| `evidence_inference` | 1.671 |
+| `self_refine` | 5.348 |
+| `select` | 1.663 |
+
+**Validation theo business** (`scripts/validate.py`, 5 fold, log G1): PA 0,9997, Brier 0,0011, ECE 0,022 ở τ = 0,6.
+Kết quả lạc quan vì luật G1 viết trên toàn bộ train; quy trình này dành cho generator LLM sau khi có log GPU.
+
+**Hồi quy:** train vẫn PA 1,000. File public chế độ CPU **giống hệt từng byte** bản trước, vì G4 chỉ chạy khi có LLM.

@@ -5,7 +5,7 @@
 
 DataMate-XiYan trả lời câu hỏi tiếng Việt đời thường trực tiếp từ dữ liệu kinh doanh **CSV, Excel và SQLite**. Hệ thống kết hợp **bộ phân tích luật (rule-based semantic parser)**, các **LLM generators lấy cảm hứng từ XiYan-SQL**, một bộ thực thi xác định và cơ chế **abstention** nhằm tối ưu **Penalized Accuracy (PA)**.
 
-> **Trạng thái hiện tại:** Chế độ **CPU / G1 rule-only** đã có kết quả đánh giá. Code cho G2–G4 sử dụng **Qwen3-14B**, SFT LoRA và GRPO đã có trong repo, nhưng **chưa có benchmark thực tế cho pipeline LLM**. Không nên hiểu điểm PA công bố dưới đây là kết quả của mô hình đã fine-tune.
+> **Trạng thái hiện tại:** Chế độ **CPU / G1 rule-only** đã có kết quả đánh giá. Pipeline SQL theo **XiYan-SQL** (Schema Filter theo từng câu hỏi + PFKeyIdentifier, sinh SQL trên nhiều schema × nhiều định dạng + self-refine, candidate reorganization + selection model, dữ liệu multi-task/multi-format) đã được cài đặt; các phần **không cần LLM** đã đo trên train (§4.2). Phần dùng **Qwen3-14B** mới kiểm thử bằng mock LLM, **chưa có benchmark thật trên GPU**. Không nên hiểu điểm PA công bố dưới đây là kết quả của mô hình đã fine-tune.
 
 ## Nội dung
 
@@ -17,7 +17,8 @@ DataMate-XiYan trả lời câu hỏi tiếng Việt đời thường trực ti�
 6. [Huấn luyện và sử dụng LLM](#6-huấn-luyện-và-sử-dụng-llm)
 7. [Đánh giá và kiểm soát độ tin cậy](#7-đánh-giá-và-kiểm-soát-độ-tin-cậy)
 8. [Docker và submission](#8-docker-và-submission)
-9. [Giới hạn và hướng phát triển](#9-giới-hạn-và-hướng-phát-triển)
+9. [Tạo `submission.jsonl` để nộp leaderboard](#9-tạo-submissionjsonl-để-nộp-leaderboard)
+10. [Giới hạn và hướng phát triển](#10-giới-hạn-và-hướng-phát-triển)
 
 ## 1. Bài toán và mục tiêu
 
@@ -99,7 +100,7 @@ data/
     └── calendar.csv
 ```
 
-> Dữ liệu gốc của ban tổ chức **không nằm sẵn trong repo**. Không commit các bộ dữ liệu của cuộc thi. `public_test` không có `answers.jsonl`.
+> Repo này đã kèm sẵn hai split trong `data/train` và `data/public_test` (clone xong là chạy được). Nếu dùng bản repo không có dữ liệu, giải nén dữ liệu của ban tổ chức theo đúng cấu trúc trên. `public_test` không có `answers.jsonl`. Kiểm tra lại quy định chia sẻ dữ liệu của cuộc thi trước khi để repo ở chế độ public.
 
 ### Bước 3 — Kiểm thử nhanh trên CPU
 
@@ -148,17 +149,18 @@ Các bảng nghiệp vụ chuẩn bao gồm đơn hàng, dòng bán, danh mục 
 - Diễn giải mốc thời gian dựa trên `as_of_date`; dùng lịch âm cho những khoảng Tết.
 - Chuyển yêu cầu thành **Frame DSL**: intent, khoảng thời gian, bộ lọc, tiêu chí xếp hạng và kiểu trả lời.
 
-### 3.3. Bốn generator
+### 3.3. Các generator
 
 | Generator | Chức năng | Cách tạo kết quả |
 |---|---|---|
 | **G1 — Rule** | Phân tích trực tiếp câu hỏi bằng luật | Frame DSL → deterministic executor |
 | **G2 — JSON Frame** | LLM trích intent/time/filter | JSON → câu hỏi chuẩn → G1 |
 | **G3 — Rewrite** | LLM viết lại câu hỏi nhiễu | Câu viết lại → G1 |
-| **G4 — Text-to-SQL** | Dự phòng cho câu chưa được giải quyết | SQL trên DuckDB views, sửa một lượt khi lỗi thực thi |
+| **G4 — XiYan SQL** (`G4_base`, `G4_cte`, `G4_alias`) | Text-to-SQL trên các view chuẩn hoá | Schema Filter → sinh SQL trên S1/S2/full × 3 định dạng → thực thi → self-refine → selection (§3.6) |
+| **G_select** | Selection model chọn một SQL trong các ứng viên đã tái tổ chức | Một phiếu bầu thêm cho selector, không bỏ qua ngưỡng abstain |
 
-**Code:** `datamate/nlu/rules.py`, `datamate/llm/generators.py`, `datamate/llm/mschema.py`.  
-Một `ExampleBank` từ train hỗ trợ few-shot retrieval; G4 nhận M-Schema của các view đã chuẩn hóa.
+**Code:** `datamate/nlu/rules.py`, `datamate/llm/generators.py`, `datamate/llm/sql_pipeline.py`, `datamate/select/selection_model.py`.  
+`ExampleBank` (TF-IDF) lấy few-shot từ train; G4 lấy few-shot SQL **đã kiểm chứng bằng thực thi** (`artifacts/sql_silver.jsonl`, đúng định dạng của từng generator).
 
 ### 3.4. Business Engine
 
@@ -173,6 +175,27 @@ Các phép tính tuân theo quy tắc nghiệp vụ của split: loại đơn h�
 Mỗi generator có thể đưa ra một đáp án ứng viên. Selector **gom nhóm theo giá trị đáp án đã thực thi**, kết hợp độ tin cậy theo generator/intent và trừ điểm khi các ứng viên mâu thuẫn. Các tín hiệu rủi ro gồm từ chưa giải thích được, câu hỏi và kiểu đáp án mâu thuẫn, tie ở ranh giới top-k hoặc luật nghiệp vụ thay đổi.
 
 Hệ thống trả lời khi điểm tin cậy qua ngưỡng, ngược lại chọn `abstain`. Các xác suất này là **ước lượng heuristic/calibrated reliability**, chưa nên coi là xác suất thống kê được hiệu chỉnh hoàn hảo trên dữ liệu chưa gặp.
+
+Với ứng viên SQL, selector còn **đọc nội dung SQL** (`datamate/select/sql_checks.py`): thiếu `is_valid`, cột ngày / khoảng thời gian sai, chặn trên dạng `<` bỏ mất ngày cuối, JOIN nhân bản dòng khi cộng cột cấp đơn, dùng tiền đã trả (`payments`, `total_due`) thay cho doanh thu, xếp hạng mặt hàng không lọc `kind = 'item'`, `LIMIT` khác top-k của câu hỏi, kết quả nhiều dòng khi cần một giá trị. Mỗi cờ hạ độ tin cậy của ứng viên. **Nhiều SQL của cùng một model không phải các phiếu độc lập:** selector gom theo *model family*, mỗi family chỉ có một phiếu trong mỗi nhóm đáp án, dù model đó sinh ở bao nhiêu schema hay định dạng.
+
+### 3.6. Tương ứng với XiYan-SQL (Paper7, repo `alibaba/XiYan-SQL`)
+
+| Thành phần trong paper | Trong repo | File |
+|---|---|---|
+| **M-Schema** (`【DB_ID】`, `# Table`, `(cột:KIỂU, mô tả, Primary Key, Examples)`, `【Foreign keys】`) | Cùng định dạng và API (`add_table`, `add_field`, `add_foreign_key`, `to_mschema(selected_columns)`) như `XGenerationLab/M-Schema`. Khoá **có cấu trúc**: PK (kể cả khoá ghép `sales_lines(order_id, line_no)`), FK, cột ngày, cột điều kiện nghiệp vụ. Mọi khai báo khoá đều **kiểm chứng trên dữ liệu** (PK duy nhất, không null; FK ≥ 95 % giá trị tồn tại), sai thì bỏ và ghi `issues` | `datamate/llm/mschema.py` |
+| **Multi-path retrieval**: keyword `K = M_s(Q,E)`; `Score(k,c) = cos(V_{Q‖E}, V_tab(c)) · cos(V_k, V_c)`; value retrieval bằng edit distance + LSH | Keyword từ LLM (nếu có) ∪ keyword luật; cùng công thức Eq. 1 trên **TF-IDF n-gram ký tự** + bảng thuật ngữ nghiệp vụ tiếng Việt; value retrieval bằng chỉ mục n-gram (thay LSH) + edit distance, giữ cột chứa giá trị; thêm một đường **lexicon** (ánh xạ đồng nghĩa → cột, tức "synonym mappings" trong evidence của paper) | `datamate/llm/schema_filter.py` |
+| **Algorithm 1** — chọn cột lặp `ps = 2`, `PFKeyIdentifier`, `S_i = ∪S_{k<i} ∪ S_slct ∪ P_i`, `S_rtrv ← S_rtrv \ (S_slct \ P_i)` | Như paper; `M_s` = Qwen3-14B (prompt chọn cột, gọi theo lô), không có LLM thì dùng bộ chọn heuristic. `PFKeyIdentifier` bổ sung đủ khoá ghép và khoá trên đường nối (BFS qua FK đã kiểm chứng). **Luôn giữ cột điều kiện nghiệp vụ** (`is_valid`, `kind`, `status`, `cancelled`) và cột ngày của mọi bảng dùng tới. Schema đầy đủ giữ làm **baseline** và **dự phòng** khi schema lọc không hợp lệ | `datamate/llm/schema_filter.py` |
+| **Evidence E** (giải thích schema, đồng nghĩa, luật nghiệp vụ) | Ngày hôm nay + các dòng rulebook liên quan (truy hồi TF-IDF) + quy ước trong README của shop | `datamate/llm/evidence.py` |
+| **Algorithm 2** — `ps` schema × `pm` generator, thực thi, self-refine 1 lần khi lỗi / kết quả bất thường | S1, S2, full × 3 định dạng (`base`, `cte` = biến thể cấu trúc, `alias` = biến thể phong cách, như Fig. 3) với few-shot SQL theo định dạng; self-refine dùng template của XiYan; loại SQL trùng (de-formalize), không chạy lại; mỗi ứng viên lưu SQL, schema, generator, model family, kết quả/lỗi, cờ kiểm tra, thời gian, số token; DuckDB chỉ-đọc, có timeout | `datamate/llm/sql_pipeline.py` |
+| **Algorithm 3** — de-formalize, gom nhóm theo kết quả, sắp xếp liên nhóm/nội nhóm, đồng thuận ≥ ⌈\|L\|/2⌉ thì đưa hết, không thì mỗi nhóm một SQL ngắn nhất, `M_c(Q, S_un, E, L')` | Như paper; `M_c` dùng template chọn ứng viên của XiYan; lựa chọn của nó là **một phiếu** trong selector có hiệu chuẩn, không thay ngưỡng abstain (khác paper vì metric phạt câu sai) | `datamate/select/selection_model.py`, `datamate/select/selector.py` |
+| **Multi-task fine-tuning** (Text-to-SQL, question inference, evidence inference, self-refine) + **multi-format** + dữ liệu chọn listwise với near-miss | Sinh từ SQL đã kiểm chứng trên train: 7 loại bản ghi, negative "near-miss" bằng **controlled modification** (`sql_mutations.py`); xuất cả định dạng `alibaba/XiYan-SQLTraining` | `training/build_sql_sft.py`, `scripts/build_sql_silver.py` |
+
+**Điều chỉnh bắt buộc vì luật cuộc thi** (khác paper có chủ đích):
+
+- **≤ 15B tham số cho *mọi* model, offline:** không có model embedding riêng (Qwen3-14B đã chiếm 14,8B), nên similarity dùng TF-IDF n-gram ký tự. `M_s`, generator và `M_c` cùng là một Qwen3-14B. Paper dùng GPT-4o, 4 model Qwen2.5-Coder-32B fine-tune và một selection model 7B, tức nhiều model riêng biệt.
+- **Đa dạng generator:** hiện là *một* model với 3 định dạng SQL qua prompt. Đây chưa phải các generator fine-tune riêng như paper, và chúng **không** được tính là phiếu độc lập. Muốn đi xa hơn thì train **một** model đa nhiệm, đa định dạng (định dạng chọn bằng chỉ dẫn trong prompt) để vẫn 14,8B. Adapter LoRA riêng cho từng định dạng phải được cộng vào tổng tham số (`scripts/count_params.py`).
+- **Metric PA phạt câu sai:** paper luôn trả về một SQL; ở đây lựa chọn cuối là bỏ phiếu có hiệu chuẩn rồi mới qua ngưỡng τ, vì vậy có thể `abstain`.
+- **G4 chạy cho câu G1/G2/G3 chưa chắc** (`DATAMATE_G4_SCOPE=unresolved`, mặc định) để vừa ngân sách 6 giờ; đặt `all` để G4 chạy mọi câu.
 
 ## 4. Kết quả thực nghiệm
 
@@ -189,6 +212,18 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 
 Chi tiết breakdown theo intent, thay đổi giữa hai bản và phân tích lỗi nằm trong [báo cáo kết quả](docs/RESULTS.md). File kết quả CPU được lưu tại [`submissions/public_test_rule_only.jsonl`](submissions/public_test_rule_only.jsonl).
 
+### 4.2. Các thành phần XiYan đo được không cần LLM (train, trong mẫu)
+
+| Thành phần | Phép đo | Kết quả | Lệnh |
+|---|---|---|---|
+| Silver SQL (frame → SQL → thực thi → so đáp án) | câu train có SQL đã kiểm chứng | **1.671** / 1.689 SQL biên dịch được (98,9 %), 3 định dạng / câu | `python scripts/build_sql_silver.py data/train` |
+| Schema Filter (bộ chọn cột heuristic, không LLM) | tỉ lệ câu mà schema giữ **đủ mọi cột** SQL đúng cần, số cột trung bình | S1: **91,5 %**, 11,1 cột · S2: **99,6 %**, 16,9 cột · full: 100 %, 42,3 cột | `python scripts/eval_schema_filter.py data/train` |
+| SQL checks | báo động nhầm trên 5.013 SQL đúng | **0** (0,0 %) | `python scripts/eval_sql_checks.py data/train` |
+| SQL checks | phát hiện near-miss làm đổi đáp án | thiếu `is_valid` 93 % · lệch tháng 100 % · `<` bỏ ngày cuối 99 % · JOIN nhân bản 100 % · `total_due` thay doanh thu 95 % · sai `LIMIT` 100 % | như trên |
+| Selector / calibration | business-level 5-fold trên log G1 | PA 0,9997, Brier 0,0011, ECE 0,022 (lạc quan: luật G1 viết trên toàn train) | `python scripts/validate.py runs/train/logs data/train/answers.jsonl` |
+
+Các số này **trong mẫu**: thuật ngữ của Schema Filter và luật G1 được viết khi đọc train. Chúng cho biết các thành phần làm đúng việc, **không** phải điểm generalization. Phần cần LLM (keyword/chọn cột bằng Qwen3-14B, sinh SQL, selection model) mới chạy với mock LLM (`tests/test_xiyan_pipeline.py`) và cần benchmark trên GPU.
+
 ## 5. Cấu trúc repository
 
 ```text
@@ -200,26 +235,41 @@ datamate-xiyan-/
 │   ├── nlu/                    # Rule parser, Frame, time, linking, guards
 │   ├── domains/                # Sửa xe, điện thoại, sổ nợ/trả góp
 │   ├── engine/                 # Business execution & answer formatting
-│   ├── llm/                    # Backends, prompts, generators, M-Schema
+│   ├── llm/                    # Backends, prompts (template XiYan), G2/G3, M-Schema + khoá
+│   │   ├── mschema.py          # View chuẩn hoá, MSchema (PK/FK/khoá ghép đã kiểm chứng)
+│   │   ├── schema_filter.py    # Multi-path retrieval, Algorithm 1, PFKeyIdentifier
+│   │   ├── evidence.py         # Evidence E: dòng rulebook + README liên quan
+│   │   ├── sql_pipeline.py     # Algorithm 2: S1/S2/full × định dạng, thực thi, self-refine, provenance
+│   │   ├── frame2sql.py        # Frame → SQL (silver SQL, 3 định dạng)
+│   │   └── sql_mutations.py    # Near-miss negatives (controlled modification)
 │   ├── select/                 # Voting, reliability, abstention
+│   │   ├── sql_checks.py       # Kiểm tra nội dung SQL (is_valid, ngày, fan-out, doanh thu…)
+│   │   └── selection_model.py  # Algorithm 3: reorganization + selection model
 │   ├── rulebook.py             # Split-specific business rules
 │   ├── scorer.py               # Local Penalized Accuracy scorer
 │   ├── textnorm.py             # Chuẩn hóa tiếng Việt
 │   └── augment.py              # Tạo nhiễu câu hỏi train
 ├── training/
 │   ├── build_sft_data.py       # Sinh dữ liệu rewrite/frame/answerability
+│   ├── build_sql_sft.py        # Dữ liệu multi-task/multi-format cho SQL generator + selection model
 │   ├── sft_lora.py             # LoRA supervised fine-tuning
 │   └── grpo_abstain.py         # RL với reward +1 / −1 / 0
 ├── scripts/
 │   ├── build_artifacts.py      # Tạo train-derived vocabulary/few-shot bank
 │   ├── eval_rules.py           # Đánh giá G1 theo intent
 │   ├── calibrate.py            # Hiệu chuẩn reliability theo intent
+│   ├── build_sql_silver.py     # SQL đã kiểm chứng bằng thực thi (train)
+│   ├── eval_schema_filter.py   # Recall cột của S_rtrv / S1 / S2 / full
+│   ├── eval_sql_checks.py      # Báo động nhầm / tỉ lệ phát hiện của SQL checks
+│   ├── validate.py             # Business-level K-fold: PA, ECE, Brier, quét τ, log lỗi
+│   ├── check_submission.py     # Kiểm tra định dạng submission.jsonl trước khi nộp
+│   ├── count_params.py         # Tổng tham số mọi model dùng khi suy luận (≤ 15B)
 │   └── ...                     # Công cụ kiểm tra và debug
 ├── artifacts/                  # Vocab, example bank, reliability
 ├── tests/                      # Unit tests và mock-LLM integration test
 ├── docs/RESULTS.md             # Số liệu và phân tích thực nghiệm
 ├── submissions/                # File submission CPU hiện có
-├── data/                       # Nơi đặt train/public_test (không commit)
+├── data/                       # train/ và public_test/ (đã kèm trong repo)
 ├── requirements.txt
 ├── requirements-train.txt
 ├── Dockerfile
@@ -259,6 +309,29 @@ python training/build_sft_data.py \
 ```
 
 Mỗi ví dụ huấn luyện được tạo từ frame G1 **đã khớp đáp án train**; mục tiêu SFT bao gồm **rewrite**, **JSON frame** và **answerability**. Dữ liệu train có thể được augment bằng các biến thể câu hỏi tiếng Việt.
+
+### 6.3b. Dữ liệu multi-task / multi-format cho SQL generator và selection model (XiYan §III-C/D)
+
+```bash
+python scripts/build_sql_silver.py data/train                         # artifacts/sql_silver.jsonl
+python training/build_sql_sft.py --split data/train --out outputs/sql_sft --n-aug 2
+```
+
+Từ 1.671 câu train có SQL đã kiểm chứng (với `--n-aug 1`: 20.379 bản ghi), schema trong prompt là schema mà Schema Filter cho ra lúc suy luận:
+
+| Task | Input → Output | Paper |
+|---|---|---|
+| `nl2sql_base` / `nl2sql_cte` / `nl2sql_alias` | (Q, E, S) → SQL theo từng định dạng | Fig. 2(a), Fig. 3 |
+| `question_inference` | (SQL, E, S) → Q | Fig. 2(b) |
+| `evidence_inference` | (Q, SQL, các luật ứng viên) → luật SQL đã dùng | Fig. 2(c) |
+| `self_refine` | (Q, E, S, SQL near-miss + kết quả thực thi) → SQL đúng | Fig. 2(d) |
+| `select` | (Q, E, S, ứng viên đã de-formalize, thứ tự ngẫu nhiên) → `{"choice": i}` | §III-D |
+
+Hai file đầu ra: `sql_sft.jsonl` cho `training/sft_lora.py`, và `xiyan_sql_sft.json` theo định dạng `conversations` của `alibaba/XiYan-SQLTraining`. **Công thức trong giới hạn 15B:** train *một* model trên mọi task và định dạng, định dạng được chọn bằng chỉ dẫn trong prompt. Sau khi merge, model vẫn có 14,8B tham số. Nếu muốn dùng nhiều adapter LoRA cùng lúc, kiểm tra tổng:
+
+```bash
+python scripts/count_params.py /models/llm outputs/lora_cte outputs/lora_alias
+```
 
 ### 6.4. SFT LoRA (GPU)
 
@@ -326,6 +399,16 @@ python scripts/eval_rules.py data/train
 
 Chương trình ghi các trường như câu hỏi, intent, frame, đáp án dự đoán, reference và score để phân tích từng loại lỗi. Có thể dùng `scripts/review_run.py`, `scripts/check_consistency.py` và `scripts/check_guard.py` để chẩn đoán thêm.
 
+### Validation theo business và hiệu chuẩn confidence
+
+```bash
+python scripts/validate.py runs/train/logs data/train/answers.jsonl --folds 5
+# sau một lần chạy GPU trên train: hiệu chuẩn lại mọi generator (G1–G4, G_select) theo business-level fold
+python scripts/validate.py runs/train_llm/logs data/train/answers.jsonl --folds 5 --write-reliability artifacts/reliability.json
+```
+
+Mỗi shop chỉ nằm trong một fold. Độ tin cậy của từng generator × intent được fit trên K−1 fold, rồi selector chạy lại trên fold còn lại. Script in PA, coverage, precision khi trả lời, **Brier**, **ECE**, reliability diagram và kết quả quét τ; mọi câu trả lời sai được ghi vào `runs/validate/errors.jsonl`. Log của mỗi câu (`logs/<id>.json`) có: ứng viên theo từng generator, `schema_filter` (keyword, cột đã truy hồi, giá trị khớp, S1/S2), `evidence`, `sql_candidates` (SQL, schema, định dạng, model family, kết quả hoặc lỗi, cờ kiểm tra, thời gian, token, các nguồn trùng) và `selection` (mode, số ứng viên đưa ra, SQL được chọn).
+
 ### Các lớp kiểm tra trước khi trả lời
 
 - **Business consistency:** đơn hợp lệ, đơn vị, thời gian, điều kiện lọc và luật của split.
@@ -359,13 +442,80 @@ docker run --rm --gpus all --network none \
 
 **Trước khi nộp Docker cuối cùng:** kiểm tra base image theo guideline ban tổ chức (CUDA/Blackwell), model/license và tổng tham số, logs, giới hạn **6 giờ**, tính tái lập và chạy thử với `--network none`. Việc code có Dockerfile **không đồng nghĩa** image đã được kiểm chứng thành công trên 2 × RTX 5090.
 
-## 9. Giới hạn và hướng phát triển
+## 9. Tạo `submission.jsonl` để nộp leaderboard
+
+Các bước dưới đây giả định repo đã có đủ code và `data/train`, `data/public_test`. Lệnh viết cho bash (Linux, macOS, Git Bash); với PowerShell, thay `export X=y` bằng `$env:X = "y"`.
+
+**Bước 1 — Cài đặt và kiểm tra môi trường**
+
+```bash
+git clone https://github.com/AIVIETNAM-AIO-khaisiubeo/datamate-xiyan-.git
+cd datamate-xiyan-
+python -m pip install -r requirements.txt pytest
+export DATAMATE_CACHE=.cache            # cache dữ liệu đã đọc (nhanh hơn từ lần chạy thứ 2)
+python -m pytest -q tests/              # mọi test phải pass
+```
+
+**Bước 2 — Kiểm tra trên train trước (có đáp án)**
+
+```bash
+python -m datamate.predict --data data/train --out runs/train/submission.jsonl --llm none
+python scripts/check_submission.py runs/train/submission.jsonl data/train/questions.jsonl data/train/answers.jsonl
+```
+
+Dòng `[datamate] PA=…` và `local PA` phải bằng **1.0000** ở chế độ CPU. Nếu thấp hơn, môi trường hoặc code đã thay đổi; xem `runs/train/logs/` và `python scripts/validate.py runs/train/logs data/train/answers.jsonl`.
+
+**Bước 3 — Sinh file cho public test**
+
+Chọn một trong ba cách:
+
+```bash
+# (a) CPU, rule-only: nhanh (~1–5 phút), tất định — cách đã tạo bản nộp hiện tại
+python -m datamate.predict --data data/public_test --out runs/public/submission.jsonl --llm none
+
+# (b) GPU, đầy đủ G1–G4 + selection model (cần model local, ví dụ Qwen3-14B tại /models/llm)
+python -m datamate.predict --data data/public_test --out runs/public_llm/submission.jsonl --llm vllm --model /models/llm
+# tuỳ chọn: chạy G4 cho mọi câu thay vì chỉ câu chưa chắc
+export DATAMATE_G4_SCOPE=all
+
+# (c) Docker, đúng môi trường chấm (đọc /data, ghi /result)
+docker build -t datamate-xiyan:final .
+docker run --rm --gpus all --network none -v "$(pwd)/data/public_test:/data:ro" -v "$(pwd)/result:/result" datamate-xiyan:final
+# file nộp: result/submission.jsonl
+```
+
+**Bước 4 — Kiểm tra file trước khi tải lên**
+
+```bash
+python scripts/check_submission.py runs/public/submission.jsonl data/public_test/questions.jsonl
+```
+
+Script kiểm tra: mỗi dòng là một JSON; đủ đúng 1.000 `id` của `questions.jsonl`, không trùng, không thừa; `type` hợp lệ; `answer` đúng kiểu (`number`/`percent` là số, `date` dạng `YYYY-MM-DD` hoặc `YYYY-MM`, `table` có `columns`/`rows`…). Phải in ra `OK: format valid`. Có thể so với bản đã nộp để biết bao nhiêu câu thay đổi:
+
+```bash
+python -c "import json;a=[json.loads(l) for l in open('submissions/public_test_rule_only.jsonl',encoding='utf-8')];b=[json.loads(l) for l in open('runs/public/submission.jsonl',encoding='utf-8')];print(sum(x!=y for x,y in zip(a,b)),'answers changed')"
+```
+
+**Bước 5 — Nộp**
+
+- Tải `runs/public/submission.jsonl` (hoặc `result/submission.jsonl` nếu dùng Docker) lên trang nộp bài của Zalo AI Challenge, đúng track **SLM (≤ 15B)**. Chế độ CPU không dùng model nào; chế độ GPU dùng Qwen3-14B (14,8B tham số).
+- Giữ lại thư mục `logs/` cạnh file nộp: log từng câu theo yêu cầu thể lệ.
+- Lưu bản đã nộp vào `submissions/` và ghi điểm leaderboard vào `docs/RESULTS.md` để so sánh các lần nộp.
+
+**Lưu ý**
+- Chỉ dùng nhãn của **train** để fit hay hiệu chuẩn (`artifacts/`). Không dùng public/private test để huấn luyện.
+- Với chế độ GPU, chạy `python scripts/count_params.py /models/llm [adapter...]` để chắc tổng tham số ≤ 15B. Kiểm tra log để chắc LLM đã thực sự được nạp: nếu không nạp được model, backend tự chuyển về rule-only.
+- `DATAMATE_TAU` (mặc định 0.6) là ngưỡng abstain. Tăng τ thì trả lời ít câu hơn nhưng chắc hơn. Chỉ chỉnh τ dựa trên `scripts/validate.py` trên train, không dựa trên điểm public.
+
+## 10. Giới hạn và hướng phát triển
 
 1. **Generalization:** train đạt 1.000 nhưng đó là kết quả trong mẫu; public bản 1 đạt 0.561. Các cách diễn đạt mới, bảng có schema lạ và business chưa gặp vẫn là thách thức.
-2. **LLM chưa được benchmark:** G2/G3/G4 mới được thử bằng mock LLM. Cần chạy inference thật với Qwen3-14B và so sánh PA trên validation độc lập.
-3. **Training GPU còn thử nghiệm:** script SFT hiện là LoRA BF16, không phải QLoRA; GRPO chưa có số liệu xác nhận.
-4. **Calibration:** reliability theo intent đang lấy từ train và có thể quá lạc quan; cần business-level holdout và ablation `G1` so với `G1+G2+G3` và `G1+G2+G3+G4`.
-5. **Rulebook drift và độ an toàn SQL:** thay đổi luật trong split khác có thể khiến engine không còn đúng; G4 chỉ nên chạy trên view được phép, với giới hạn thời gian và tài nguyên phù hợp.
+2. **LLM chưa được benchmark:** G2/G3 và pipeline XiYan của G4 (keyword/chọn cột bằng LLM, sinh SQL, self-refine, selection model) mới chạy với mock LLM. Cần chạy inference thật với Qwen3-14B, rồi ablation trên validation theo business: `G1` → `+G2/G3` → `+G4 full schema` → `+S1/S2` → `+3 định dạng` → `+selection model`. Chỉ giữ thành phần nào làm PA tăng: thêm thành phần không tự động làm hệ thống chính xác hơn.
+3. **Đa dạng generator:** 3 định dạng SQL hiện là prompt của một model, nên chưa tương đương các generator fine-tune riêng của paper. Bước tiếp: train một model đa nhiệm, đa định dạng bằng `training/build_sql_sft.py` (vẫn 14,8B), rồi mới tính đến LoRA riêng cho từng định dạng nếu ngân sách tham số cho phép.
+4. **Training GPU còn thử nghiệm:** script SFT hiện là LoRA BF16, không phải QLoRA; GRPO chưa có số liệu xác nhận.
+5. **Calibration:** reliability của G4 và G_select hiện là giá trị mặc định (0,55–0,60). Cần hiệu chuẩn bằng `scripts/validate.py --write-reliability` trên log GPU của train. Hiệu chuẩn của G1 lấy từ train và có thể quá lạc quan.
+6. **Schema Filter không LLM** dùng TF-IDF + bảng thuật ngữ viết khi đọc train, nên với shop có cột lạ, recall có thể thấp hơn §4.2. Schema đầy đủ luôn được giữ làm baseline.
+7. **Rulebook drift và độ an toàn SQL:** thay đổi luật trong split khác có thể khiến engine không còn đúng. G4 chỉ chạy trên các view đã chuẩn hoá, DuckDB chỉ-đọc, có timeout cho mỗi truy vấn.
 
 ### Nền tảng nghiên cứu
 

@@ -28,6 +28,10 @@ DEFAULT_RELIABILITY = {
     "G3_rewrite": 0.80,
     "G2_frame": 0.72,
     "G4_sql": 0.55,
+    "G4_base": 0.55,      # SQL generators (one model, three formats): uncalibrated until GPU logs exist
+    "G4_cte": 0.55,
+    "G4_alias": 0.55,
+    "G_select": 0.60,     # selection model's pick among SQL candidates
     "G5_answerability": 0.70,
 }
 
@@ -47,6 +51,11 @@ class Candidate:
     answer: Answer
     intent: Optional[str] = None
     detail: Dict = field(default_factory=dict)
+
+    @property
+    def family(self) -> str:
+        """Model identity: candidates of one family (e.g. several SQL formats of the same LLM) are one vote."""
+        return self.detail.get("family") or self.gen
 
 
 class Selector:
@@ -82,37 +91,50 @@ class Selector:
         for key, members in groups.items():
             s = 0.0
             seen = set()
+            # one vote per model family and group: the most reliable member of the family speaks for it
+            fam_best: Dict[str, Candidate] = {}
             for c in members:
-                if c.gen in seen:
-                    continue  # several samples of one generator count once (self-consistency handled upstream)
+                cur = fam_best.get(c.family)
+                if cur is None or self._r_eff(c, trusted) > self._r_eff(cur, trusted):
+                    fam_best[c.family] = c
+            for c in fam_best.values():
                 seen.add(c.gen)
-                r = self.r(c.gen, _ikey(c))
-                if trusted is not None and c.intent and trusted.get(c.intent) is False and c.gen == "G1_rule":
-                    r = min(r, 0.35)
-                if c.answer.meta.get("tie"):
-                    r = min(r, 0.3)
-                if c.answer.meta.get("oov") or c.answer.meta.get("conflict"):
-                    # the question mentions concepts the parse ignored (unseen business vocabulary)
-                    r = min(r, self.oov_cap)
+                r = self._r_eff(c, trusted)
                 s += logit(r)
             others = set()
             for k2, m2 in groups.items():
                 if k2 == key:
                     continue
                 for c in m2:
-                    if c.gen in others or c.gen in seen:
+                    if c.family in others or c.family in fam_best:
                         continue
-                    others.add(c.gen)
-                    s -= self.lam * max(0.0, logit(self.r(c.gen, _ikey(c))))
+                    others.add(c.family)
+                    s -= self.lam * max(0.0, logit(self._r_eff(c, trusted)))
             s += _sanity_penalty(members[0].answer)
             p = sigmoid(s)
-            info["groups"].append({"key": key[:200], "gens": sorted(seen), "p": round(p, 4)})
+            info["groups"].append({"key": key[:200], "gens": sorted(seen), "families": sorted(fam_best), "p": round(p, 4)})
             if p > best_p:
                 best, best_p = members[0].answer, p
         info["p"] = round(best_p, 4)
         if best_p < self.tau:
             return Answer("abstain", reason=f"low confidence {best_p:.2f}"), info
         return best, info
+
+    def _r_eff(self, c: Candidate, trusted=None) -> float:
+        """Reliability of one candidate after its risk signals."""
+        r = self.r(c.gen, _ikey(c))
+        if trusted is not None and c.intent and trusted.get(c.intent) is False and c.gen == "G1_rule":
+            r = min(r, 0.35)
+        if c.answer.meta.get("tie"):
+            r = min(r, 0.3)
+        if c.answer.meta.get("oov") or c.answer.meta.get("conflict"):
+            # the question mentions concepts the parse ignored (unseen business vocabulary)
+            r = min(r, self.oov_cap)
+        flags = c.detail.get("flags") or []
+        if flags:
+            from .sql_checks import penalty_factor
+            r *= penalty_factor(flags)
+        return r
 
 
 def _ikey(c: Candidate) -> Optional[str]:

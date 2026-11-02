@@ -20,6 +20,8 @@ from typing import Callable, Dict, List, Optional
 class LLMBackend:
     name = "base"
     available = False
+    family = "none"              # model identity: candidates of one family are not independent votes
+    last_usage: List = []         # [(prompt_tokens, [completion_tokens per sample])] of the last generate()
 
     def generate(self, prompts: List[str], n: int = 1, temperature: float = 0.0, max_tokens: int = 512,
                  json_schema: Optional[dict] = None, seed: int = 0, stop: Optional[List[str]] = None) -> List[List[str]]:
@@ -44,8 +46,12 @@ class MockBackend(LLMBackend):
     def __init__(self, fn: Callable[[str], str]):
         self.fn = fn
 
+    family = "mock"
+
     def generate(self, prompts, n=1, temperature=0.0, max_tokens=512, json_schema=None, seed=0, stop=None):
-        return [[self.fn(p) for _ in range(n)] for p in prompts]
+        outs = [[self.fn(p) for _ in range(n)] for p in prompts]
+        self.last_usage = [(len(p) // 4, [len(x) // 4 for x in o]) for p, o in zip(prompts, outs)]
+        return outs
 
 
 class VLLMBackend(LLMBackend):
@@ -65,6 +71,7 @@ class VLLMBackend(LLMBackend):
         self.tok = self.llm.get_tokenizer()
         self.enable_thinking = enable_thinking
         self.available = True
+        self.family = os.path.basename(os.path.normpath(model_path))
         self.load_seconds = time.time() - t0
 
     def chat_prompt(self, system: str, user: str) -> str:
@@ -87,6 +94,7 @@ class VLLMBackend(LLMBackend):
                 pass
         sp = SamplingParams(**kw)
         outs = self.llm.generate(prompts, sp, use_tqdm=False)
+        self.last_usage = [(len(o.prompt_token_ids or []), [len(c.token_ids) for c in o.outputs]) for o in outs]
         return [[c.text for c in o.outputs] for o in outs]
 
 
@@ -101,6 +109,7 @@ class HFBackend(LLMBackend):
                                                           trust_remote_code=True)
         self.torch = torch
         self.available = True
+        self.family = os.path.basename(os.path.normpath(model_path))
 
     def chat_prompt(self, system: str, user: str) -> str:
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]

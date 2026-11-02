@@ -104,3 +104,86 @@ def sql_user(question: str, as_of: str, mschema: str, rulebook_digest: str, answ
 
 def answerability_user(question: str, as_of: str, data_profile: str) -> str:
     return f"Dữ liệu cửa hàng có:\n{data_profile}\n\nHôm nay: {as_of}\nCâu hỏi: {question}\n"
+
+
+# ============================================================================ XiYan-SQL pipeline prompts
+# Templates follow alibaba/XiYan-SQL (XiYan-SQLTraining/data/data_utils/prompt_utils.py): 【用户问题】/【数据库schema】/
+# 【参考信息】 blocks, a self-refine template with the failing SQL and its execution result, and a listwise
+# selection template over candidates with their execution results.  Text is Vietnamese, dialect DuckDB.
+KEYWORD_SYSTEM = (
+    "Bạn là chuyên gia phân tích câu hỏi dữ liệu. Trích các từ khoá cần để tìm cột và giá trị trong cơ sở dữ liệu: "
+    "khái niệm nghiệp vụ (doanh thu, số đơn, nợ, nhập hàng...), tên thực thể (mặt hàng, khách, nhóm, nhân viên), "
+    "giá trị lọc (kênh, hình thức thanh toán...). Không lấy mốc thời gian. In JSON {\"keywords\": [...]}."
+)
+KEYWORD_SCHEMA = {"type": "object", "properties": {"keywords": {"type": "array", "items": {"type": "string"}}},
+                  "required": ["keywords"]}
+
+
+def keyword_user(question: str, evidence: str) -> str:
+    return f"【Câu hỏi】\n{question}\n\n【Thông tin tham khảo】\n{evidence}\n\nJSON:"
+
+
+COLUMN_SELECT_SYSTEM = (
+    "Bạn là chuyên gia SQL. Từ 【Schema】 dưới đây, chọn MỌI cột cần để viết SQL trả lời câu hỏi: cột đo lường, cột lọc, "
+    "cột ngày, cột điều kiện hợp lệ và cột nối bảng. Chỉ chọn cột có trong schema, ghi dạng bảng.cột. "
+    "In JSON {\"columns\": [...]}."
+)
+COLUMN_SELECT_SCHEMA = {"type": "object", "properties": {"columns": {"type": "array", "items": {"type": "string"}}},
+                        "required": ["columns"]}
+
+
+def column_select_user(question: str, evidence: str, mschema: str) -> str:
+    return f"{mschema}\n\n【Thông tin tham khảo】\n{evidence}\n\n【Câu hỏi】\n{question}\n\nJSON:"
+
+
+NL2SQL_SYSTEM = (
+    "Bạn là chuyên gia DuckDB SQL. Đọc và hiểu 【Schema】 (các view đã chuẩn hoá theo luật của cuộc thi), 【Thông tin "
+    "tham khảo】 (luật nghiệp vụ, ngày hôm nay) rồi viết MỘT câu SQL trả lời 【Câu hỏi】. Chỉ dùng bảng/cột có trong "
+    "schema; lọc kỳ theo cột ngày của bảng; doanh thu và số đơn chỉ tính is_valid = 1; không lấy bản ghi sau hôm nay. "
+    "In SQL trong khối ```sql ... ```."
+)
+# multi-format generation styles (XiYan Fig. 3): one model, three writing preferences
+SQL_FORMAT_HINTS = {
+    "base": "",
+    "cte": "Viết theo cấu trúc: đặt các dòng đã lọc trong một CTE (WITH ... AS (...)), tính tổng hợp ở câu SELECT ngoài.",
+    "alias": "Viết theo phong cách: từ khoá chữ thường, mỗi bảng có bí danh ngắn (o, l, p...), ghi rõ bí danh trước cột.",
+}
+
+
+def nl2sql_user(question: str, mschema: str, evidence: str, fmt: str = "base", shots: List[Dict[str, str]] = ()) -> str:
+    ex = "\n\n".join(f"【Câu hỏi】\n{s['question']}\n```sql\n{s['sql']}\n```" for s in shots if s.get("sql"))
+    hint = SQL_FORMAT_HINTS.get(fmt, "")
+    return (f"【Câu hỏi】\n{question}\n\n【Schema】\n{mschema}\n\n【Thông tin tham khảo】\n{evidence}\n"
+            f"{(chr(10) + '【Ví dụ】' + chr(10) + ex + chr(10)) if ex else ''}"
+            f"{(chr(10) + hint + chr(10)) if hint else ''}\n【Câu hỏi】\n{question}\n\n```sql")
+
+
+SELF_REFINE_SYSTEM = (
+    "Bạn là chuyên gia DuckDB SQL. 【SQL】 trước đó chưa trả lời đúng 【Câu hỏi】. Dựa vào 【Schema】, 【Thông tin tham khảo】 "
+    "và 【Kết quả thực thi】 của SQL sai, hãy viết lại một SQL đúng. In SQL trong khối ```sql ... ```."
+)
+
+
+def self_refine_user(question: str, mschema: str, evidence: str, sql: str, exec_info: str) -> str:
+    return (f"【Schema】\n{mschema}\n\n【Thông tin tham khảo】\n{evidence}\n\n【Câu hỏi】\n{question}\n\n【SQL】\n{sql}\n\n"
+            f"【Kết quả thực thi】\n{exec_info}\n\n【SQL đã sửa】\n```sql")
+
+
+SELECT_SYSTEM = (
+    "Bạn là chuyên gia DuckDB SQL. Với 【Câu hỏi】 có nhiều 【SQL】 ứng viên cùng 【Kết quả thực thi】 (tối đa 10 dòng). "
+    "So sánh các ứng viên, phân tích khác biệt (điều kiện is_valid, cột ngày và khoảng thời gian, phép JOIN có nhân bản dòng, "
+    "doanh thu hay tiền đã trả, LIMIT...) dựa trên 【Schema】 và 【Thông tin tham khảo】, rồi chọn MỘT ứng viên đúng."
+)
+
+
+def candidate_block(i: int, sql: str, exec_info: str) -> str:
+    return f"Ứng viên {i}\n【SQL】\n{sql}\n【Kết quả thực thi】\n{exec_info}"
+
+
+def select_user(question: str, mschema: str, evidence: str, candidates: List[str]) -> str:
+    ids = ", ".join(str(i) for i in range(1, len(candidates) + 1))
+    return (f"【Schema】\n{mschema}\n\n【Thông tin tham khảo】\n{evidence}\n\n【Câu hỏi】\n{question}\n\n==========\n\n"
+            + "\n\n".join(candidates) + f"\n\nỨng viên được chọn là (một trong {ids}). In JSON {{\"choice\": <số>}}:")
+
+
+SELECT_SCHEMA = {"type": "object", "properties": {"choice": {"type": "integer"}}, "required": ["choice"]}

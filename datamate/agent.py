@@ -47,6 +47,11 @@ def default_config() -> dict:
         "time_budget_s": float(os.environ.get("DATAMATE_TIME_BUDGET", str(5.5 * 3600))),
         "use_g2": True, "use_g3": True, "use_g4": True,
         "g4_max_per_biz": 60,
+        # XiYan pipeline for G4: filtered schemas (S1, S2) + full-schema baseline, SQL formats, selection model
+        "g4_schemas": ["S1", "S2", "full"],
+        "g4_scope": os.environ.get("DATAMATE_G4_SCOPE", "unresolved"),     # 'unresolved' | 'all'
+        "schema_filter_llm": True, "use_selection_model": True, "g4_refine": True,
+        "sql_bank_path": os.path.join(ROOT, "artifacts", "sql_silver.jsonl"),
     }
 
 
@@ -83,6 +88,10 @@ class DataMateAgent:
         self.g3 = RewriteGenerator(self.backend, bank)
         self.g2 = FrameGenerator(self.backend, bank, digest)
         self.g4 = SQLGenerator(self.backend, bank, digest)
+        from .llm.sql_pipeline import MultiSQLGenerator
+        from .select.selection_model import SelectionModel
+        self.mgen = MultiSQLGenerator(self.backend, load_sql_bank(self.cfg.get("sql_bank_path")))
+        self.selmodel = SelectionModel(self.backend) if self.cfg.get("use_selection_model") else None
 
     def time_left(self) -> float:
         return self.cfg["time_budget_s"] - (time.time() - self.t_start)
@@ -130,7 +139,8 @@ class DataMateAgent:
                 cands[q["id"]].append(Candidate("G1_rule", a, fr.intent))
                 trusted[fr.intent] = self.rulebook.intent_trusted(fr.intent)
                 log["candidates"].append({"gen": "G1_rule", "intent": fr.intent, "answer": a.to_submission(q["id"]),
-                                          "reason": a.reason})
+                                          "reason": a.reason,
+                                          "meta": {k: a.meta[k] for k in ("oov", "conflict", "tie") if a.meta.get(k)}})
             log["elapsed_g1_s"] = round(time.time() - tq, 4)
             logs[q["id"]] = log
         # ---------------------------------------------------------------- LLM generators
@@ -196,8 +206,7 @@ class DataMateAgent:
 
     # ------------------------------------------------------------------ LLM stage
     def _llm_stage(self, biz, rp, items, cands, logs):
-        from .llm.generators import llm_json_to_text, run_sql, sql_result_to_value
-        from .llm.mschema import build_views, render_mschema
+        from .llm.generators import llm_json_to_text
         vocab = vocab_for(biz, rp)
         tl = time.time()
         # G3: rewrite -> G1 ------------------------------------------------
@@ -233,63 +242,108 @@ class DataMateAgent:
                         cands[q["id"]].append(Candidate("G2_frame", a, fr.intent, {"json": js, "text": text}))
                         logs[q["id"]]["candidates"].append({"gen": "G2_frame", "intent": fr.intent,
                                                              "answer": a.to_submission(q["id"]), "text": text})
-        # G4: SQL for questions still without a confident candidate -------
+        # G4: XiYan pipeline (Schema Filter -> multi-schema x multi-format SQL -> self-refine -> selection) -----
         if self.cfg.get("use_g4") and self.time_left() > 1200:
-            need = []
-            for q in items:
-                c = cands[q["id"]]
-                ans, info = self.selector.select(c)
-                if ans.type == "abstain":
-                    need.append(q)
+            if self.cfg.get("g4_scope") == "all":
+                need = list(items)
+            else:
+                need = [q for q in items if self.selector.select(cands[q["id"]])[0].type == "abstain"]
             need = need[: self.cfg["g4_max_per_biz"]]
             if need:
-                views = build_views(biz)
-                ms = render_mschema(biz.biz_id, views)
-                prompts = []
-                for q in need:
-                    at = _guess_type(q["question"])
-                    prompts.append(self.g4.build_prompt(q["question"], q["as_of_date"], ms, at))
-                outs = self.g4.run(prompts)
-                retry = []
-                for q, sqls, pr in zip(need, outs, prompts):
-                    at = _guess_type(q["question"])
-                    for sql in sqls[:1]:
-                        ok, err = self._try_sql(q, sql, at, views, cands, logs)
-                        if not ok:
-                            retry.append((q, pr, sql, err))
-                # XiYan-style refiner: one repair round with the execution error
-                if retry and self.time_left() > 900:
-                    rprompts = [pr + f"\n\nSQL trước:\n```sql\n{sql}\n```\nLỗi khi chạy: {err}\nHãy sửa SQL." for q, pr, sql, err in retry]
-                    routs = self.g4.run(rprompts)
-                    for (q, _, _, _), sqls in zip(retry, routs):
-                        for sql in sqls[:1]:
-                            self._try_sql(q, sql, _guess_type(q["question"]), views, cands, logs)
+                self._xiyan_sql(biz, rp, need, cands, logs)
         dt_llm = (time.time() - tl) / max(1, len(items))
         for q in items:
             logs[q["id"]]["elapsed_llm_s"] = round(dt_llm, 4)
 
 
-def _sql_value(sql, at, views):
-    from .llm.generators import run_sql, sql_result_to_value
-    return sql_result_to_value(run_sql(sql, views), at)
+def _xiyan_sql_impl(self, biz, rp, need, cands, logs):
+    """Schema Filter -> Algorithm 2 (multi-schema x multi-format SQL, self-refine) -> Algorithm 3
+    (reorganisation + selection model).  Every SQL candidate becomes a vote; the selector decides."""
+    from .llm.evidence import EvidenceRetriever
+    from .llm.mschema import build_mschema, build_views
+    from .llm.schema_filter import SchemaFilter
+    from .llm.sql_pipeline import SQLRunner
+    from .nlu.rules import _topk
+    from .nlu.timeparse import parse_time
+    from .select.selection_model import reorganize
+    from .textnorm import normalize_question
+    views = build_views(biz)
+    ms = build_mschema(biz.biz_id, views)
+    runner = SQLRunner(views)
+    sf = SchemaFilter(ms, views, rp.lk, backend=self.backend if self.cfg.get("schema_filter_llm") else None)
+    ev = EvidenceRetriever(self.rulebook_text, getattr(getattr(biz, "readme", None), "text", "") or "")
+    want = set(self.cfg.get("g4_schemas") or ["full"])
+    jobs, union_cols = [], {}
+    tis = [parse_time(normalize_question(q["question"]), dt.date.fromisoformat(q["as_of_date"]), self.cal) for q in need]
+    evids = [ev.evidence(q["question"], q["as_of_date"]) for q in need]
+    fress = sf.run_batch([q["question"] for q in need], evids, [ti.text_wo_time for ti in tis])   # batched LLM calls
+    for q, ti, evid, fres in zip(need, tis, evids, fress):
+        today = dt.date.fromisoformat(q["as_of_date"])
+        nq = normalize_question(q["question"])
+        g1 = next((c for c in cands[q["id"]] if c.gen == "G1_rule"), None)
+        at = g1.answer.type if g1 is not None and g1.answer.type not in ("abstain", "unanswerable") \
+            else _guess_type(q["question"])
+        schemas, seen_cols = [], set()
+        for sc in fres.schemas:
+            key = tuple(sorted(sc["columns"]))
+            if sc["id"] in want and sc["valid"] and key not in seen_cols:
+                seen_cols.add(key)
+                schemas.append((sc["id"], len(sc["columns"]), ms.to_mschema(sc["columns"], extra_examples=fres.values)))
+        if "full" in want or not schemas:
+            schemas.append(("full", len(fres.full_columns), ms.to_mschema(extra_examples=fres.values)))
+        union_cols[q["id"]] = sorted({c for sc in fres.schemas if sc["valid"] for c in sc["columns"]}) or None
+        logs[q["id"]]["schema_filter"] = fres.to_log()
+        logs[q["id"]]["evidence"] = evid
+        jobs.append({"qid": q["id"], "question": q["question"], "nq": nq, "evidence": evid, "answer_type": at,
+                     "periods": ti.periods, "k": _topk(nq), "today": today, "schemas": schemas})
+    deadline = self.t_start + self.cfg["time_budget_s"] - 900
+    out = self.mgen.run(jobs, runner, refine=self.cfg.get("g4_refine", True), deadline=deadline)
+    sel_jobs = []
+    order = {g["name"]: self.selector.r(g["name"], None) for g in self.mgen.gens}
+    for j in jobs:
+        lst = out.get(j["qid"], [])
+        logs[j["qid"]]["sql_candidates"] = [c.log() for c in lst]
+        for c in lst:
+            if c.ok:
+                a = Answer(c.answer_type, c.value)
+                det = {"sql": c.sql, "family": c.family, "flags": c.flags, "schema_id": c.schema_id, "fmt": c.fmt}
+                cands[j["qid"]].append(Candidate(c.generator, a, None, det))
+                logs[j["qid"]]["candidates"].append({"gen": c.generator, "answer": a.to_submission(j["qid"]),
+                                                     "sql": c.sql, "schema": c.schema_id, "flags": c.flags})
+        shown, mode, top = reorganize(lst, order)
+        logs[j["qid"]]["selection"] = {"mode": mode, "largest_cluster": top, "n_shown": len(shown)}
+        if self.selmodel is not None and len(shown) > 1 and self.time_left() > 600:
+            u = union_cols.get(j["qid"])
+            sel_jobs.append({"qid": j["qid"], "question": j["question"], "evidence": j["evidence"], "shown": shown,
+                             "schema_union": ms.to_mschema(u) if u else ms.to_mschema()})
+    if sel_jobs:
+        chosen = self.selmodel.choose(sel_jobs)
+        for sj in sel_jobs:
+            c = chosen.get(sj["qid"])
+            if c is None:
+                continue
+            a = Answer(c.answer_type, c.value)
+            cands[sj["qid"]].append(Candidate("G_select", a, None,
+                                              {"sql": c.sql, "family": "selector:" + c.family, "flags": c.flags}))
+            logs[sj["qid"]]["selection"]["chosen"] = c.sql
+            logs[sj["qid"]]["candidates"].append({"gen": "G_select", "answer": a.to_submission(sj["qid"]), "sql": c.sql})
+    runner.close()
 
 
-def _try_sql_impl(q, sql, at, views, cands, logs):
-    try:
-        v = _sql_value(sql, at, views)
-    except Exception as e:
-        msg = f"{type(e).__name__}: {e}"[:300]
-        logs[q["id"]].setdefault("g4_errors", []).append(msg)
-        return False, msg
-    if v is None:
-        return False, "empty result"
-    a = Answer(at, v)
-    cands[q["id"]].append(Candidate("G4_sql", a, None, {"sql": sql}))
-    logs[q["id"]]["candidates"].append({"gen": "G4_sql", "answer": a.to_submission(q["id"]), "sql": sql})
-    return True, ""
+DataMateAgent._xiyan_sql = _xiyan_sql_impl
 
 
-DataMateAgent._try_sql = staticmethod(_try_sql_impl)
+def load_sql_bank(path: Optional[str]):
+    """Few-shot bank of execution-verified SQL (train only) for the ICL path of the SQL generators."""
+    from .llm.generators import ExampleBank
+    if not path or not os.path.exists(path):
+        return None
+    items = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            r = json.loads(line)
+            items.append({"q": r["question"], "intent": r["intent"], "sql": r["sql"]})
+    return ExampleBank(items) if items else None
 
 
 def _guess_type(q: str) -> str:

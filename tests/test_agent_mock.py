@@ -39,6 +39,10 @@ def test_agent_with_mock_llm():
     agent.g3 = RewriteGenerator(mock, None)
     agent.g2 = FrameGenerator(mock, None, "")
     agent.g4 = SQLGenerator(mock, None, "")
+    from datamate.llm.sql_pipeline import MultiSQLGenerator
+    from datamate.select.selection_model import SelectionModel
+    agent.mgen = MultiSQLGenerator(mock, None)
+    agent.selmodel = SelectionModel(mock)
     with tempfile.TemporaryDirectory() as d:
         res = agent.run(sub, os.path.join(d, "sub.jsonl"), os.path.join(d, "logs"))
         assert len(res) == len(sub)

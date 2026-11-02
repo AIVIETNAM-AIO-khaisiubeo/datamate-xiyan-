@@ -30,7 +30,7 @@ VIEW_DOCS = {
         "total_due": "số khách phải trả cả đơn (sau giảm giá đơn, gồm phí giao)",
     }),
     "sales_lines": ("một dòng một mặt hàng trong đơn (đã bỏ dòng âm/trả, dòng trùng lặp)", {
-        "order_id": "mã đơn", "order_date": "ngày đặt đơn", "product_key": "khoá mặt hàng",
+        "order_id": "mã đơn", "line_no": "số thứ tự dòng trong đơn", "order_date": "ngày đặt đơn", "product_key": "khoá mặt hàng",
         "product_name": "tên mặt hàng", "product_group": "nhóm hàng", "kind": "item / service_fee / voucher / points / shipping",
         "unit": "đơn vị tính của dòng", "qty": "số lượng theo đơn vị của dòng", "base_qty": "số lượng quy về đơn vị cơ bản",
         "base_unit": "đơn vị cơ bản của mặt hàng", "unit_price": "đơn giá theo đơn vị của dòng, trước chiết khấu",
@@ -43,14 +43,14 @@ VIEW_DOCS = {
         "is_prescription": "1 nếu thuốc kê đơn",
     }),
     "payments": ("một dòng một lần khách trả tiền cho một đơn", {
-        "order_id": "mã đơn", "pay_date": "ngày trả", "amount": "số tiền trả", "method": "hình thức",
+        "order_id": "mã đơn", "pay_no": "lần trả thứ mấy của đơn", "pay_date": "ngày trả", "amount": "số tiền trả", "method": "hình thức",
     }),
     "purchases": ("một dòng một phiếu nhập", {
         "receipt_id": "mã phiếu", "receipt_date": "ngày phiếu", "supplier": "nhà cung cấp", "total": "tổng tiền phiếu",
         "cancelled": "1 nếu phiếu huỷ",
     }),
     "purchase_lines": ("một dòng một mặt hàng trong phiếu nhập", {
-        "receipt_id": "mã phiếu", "receipt_date": "ngày phiếu", "product_key": "khoá mặt hàng", "unit": "đơn vị nhập",
+        "receipt_id": "mã phiếu", "line_no": "số thứ tự dòng trong phiếu", "receipt_date": "ngày phiếu", "product_key": "khoá mặt hàng", "unit": "đơn vị nhập",
         "qty": "số lượng theo đơn vị nhập", "base_qty": "số lượng quy về đơn vị cơ bản", "unit_cost": "giá nhập một đơn vị nhập",
         "amount": "tiền nhập của dòng", "lot": "số lô", "expiry": "hạn dùng",
     }),
@@ -78,12 +78,18 @@ def build_views(b: Biz) -> Dict[str, pd.DataFrame]:
         })
     L = b.lines
     if not L.empty:
+        # product group: catalogue column, else the group written on the sales lines (as the executor does)
         pg = {}
-        if not b.products.empty:
-            pg = dict(zip(b.products["key"], b.products["group"]))
+        if not b.products.empty and "group" in b.products.columns:
+            pg = {k: g for k, g in zip(b.products["key"], b.products["group"]) if isinstance(g, str) and g.strip()}
+        if not pg and "product_group" in L.columns:
+            for k, g in zip(L["pkey"], L["product_group"]):
+                if k and isinstance(g, str) and g.strip():
+                    pg.setdefault(k, g.strip())
         sub = L[~L["neg"]]
         V["sales_lines"] = pd.DataFrame({
-            "order_id": sub["order_id"], "order_date": sub["date"].map(_d), "product_key": sub["pkey"],
+            "order_id": sub["order_id"], "line_no": sub.groupby("order_id", dropna=False).cumcount() + 1,
+            "order_date": sub["date"].map(_d), "product_key": sub["pkey"],
             "product_name": sub["pkey"].map(lambda k: b.product_name(k) if k else None),
             "product_group": sub["pkey"].map(lambda k: pg.get(k)), "kind": sub["kind"], "unit": sub["unit_eff"],
             "qty": sub["qty"], "base_qty": sub["base_qty"],
@@ -102,7 +108,8 @@ def build_views(b: Biz) -> Dict[str, pd.DataFrame]:
         })
     if not b.payments.empty:
         Pm = b.payments
-        V["payments"] = pd.DataFrame({"order_id": Pm["order_id"], "pay_date": Pm["pay_date"], "amount": Pm["pay_amount"],
+        V["payments"] = pd.DataFrame({"order_id": Pm["order_id"], "pay_no": Pm.groupby("order_id", dropna=False).cumcount() + 1,
+                                      "pay_date": Pm["pay_date"], "amount": Pm["pay_amount"],
                                       "method": Pm.get("method_n")})
     if not b.purchases.empty:
         H = b.purchases
@@ -111,7 +118,8 @@ def build_views(b: Biz) -> Dict[str, pd.DataFrame]:
                                        "cancelled": H["cancelled"].astype(int)})
     if not b.purchase_lines.empty:
         PL = b.purchase_lines
-        V["purchase_lines"] = pd.DataFrame({"receipt_id": PL["receipt_id"], "receipt_date": PL.get("date"),
+        V["purchase_lines"] = pd.DataFrame({"receipt_id": PL["receipt_id"], "line_no": PL.groupby("receipt_id", dropna=False).cumcount() + 1,
+                                            "receipt_date": PL.get("date"),
                                             "product_key": PL["pkey"], "unit": PL.get("unit"), "qty": PL.get("qty"),
                                             "base_qty": PL.get("base_qty"), "unit_cost": PL.get("unit_cost"),
                                             "amount": PL.get("amount"), "lot": PL.get("lot"), "expiry": PL.get("expiry")})
@@ -143,26 +151,170 @@ def _type(s: pd.Series) -> str:
     return "TEXT"
 
 
-def render_mschema(biz_id: str, V: Dict[str, pd.DataFrame], n_examples: int = 3) -> str:
-    out = [f"【DB_ID】 {biz_id}", "【Schema】"]
+
+
+# ============================================================================ keys and M-Schema
+# Declared keys of the canonical views (the views, not the raw files, are what the SQL sees).
+# Composite keys are explicit so PFKeyIdentifier can complete them; every declaration is
+# verified on the data (``verify_keys``) and dropped if it does not hold.
+VIEW_KEYS: Dict[str, Dict] = {
+    "orders": {"pk": ["order_id"], "date": "order_date", "guards": ["is_valid", "status"]},
+    "sales_lines": {"pk": ["order_id", "line_no"], "date": "order_date", "guards": ["is_valid", "kind"]},
+    "products": {"pk": ["product_key"]},
+    "payments": {"pk": ["order_id", "pay_no"], "date": "pay_date"},
+    "purchases": {"pk": ["receipt_id"], "date": "receipt_date", "guards": ["cancelled"]},
+    "purchase_lines": {"pk": ["receipt_id", "line_no"], "date": "receipt_date"},
+    "expenses": {"pk": [], "date": "expense_date"},
+    "deliveries": {"pk": [], "date": "delivery_date"},
+}
+VIEW_FKS: List[Tuple[str, str, str, str]] = [
+    ("sales_lines", "order_id", "orders", "order_id"),
+    ("sales_lines", "product_key", "products", "product_key"),
+    ("payments", "order_id", "orders", "order_id"),
+    ("purchase_lines", "receipt_id", "purchases", "receipt_id"),
+    ("purchase_lines", "product_key", "products", "product_key"),
+    ("deliveries", "order_id", "orders", "order_id"),
+    ("deliveries", "product_key", "products", "product_key"),
+]
+
+
+class MSchema:
+    """Semi-structured schema (same data model and text format as XGenerationLab/M-Schema), extended with
+    composite primary keys, a per-table date column and business-condition ("guard") columns."""
+
+    def __init__(self, db_id: str = "Anonymous"):
+        self.db_id = db_id
+        self.tables: Dict[str, Dict] = {}
+        self.foreign_keys: List[List[str]] = []      # [table, column, ref_table, ref_column]
+        self.issues: List[str] = []                  # key declarations rejected by the data
+
+    # -- construction (official API names) -----------------------------------
+    def add_table(self, name: str, comment: str = "", date_col: Optional[str] = None, guards: Optional[List[str]] = None):
+        self.tables[name] = {"fields": {}, "comment": comment, "date": date_col, "guards": list(guards or [])}
+
+    def add_field(self, table: str, field: str, field_type: str = "", primary_key: bool = False, comment: str = "",
+                  examples: Optional[list] = None):
+        self.tables[table]["fields"][field] = {"type": field_type, "primary_key": primary_key, "comment": comment,
+                                               "examples": list(examples or [])}
+
+    def add_foreign_key(self, table: str, field: str, ref_table: str, ref_field: str):
+        self.foreign_keys.append([table, field, ref_table, ref_field])
+
+    # -- queries --------------------------------------------------------------
+    def columns(self) -> List[str]:
+        return [f"{t}.{c}" for t, ti in self.tables.items() for c in ti["fields"]]
+
+    def primary_key(self, table: str) -> List[str]:
+        return [c for c, f in self.tables.get(table, {}).get("fields", {}).items() if f.get("primary_key")]
+
+    def guards(self, table: str) -> List[str]:
+        ti = self.tables.get(table, {})
+        return [c for c in ti.get("guards", []) if c in ti.get("fields", {})]
+
+    def date_column(self, table: str) -> Optional[str]:
+        ti = self.tables.get(table, {})
+        c = ti.get("date")
+        return c if c and c in ti.get("fields", {}) else None
+
+    def edges(self, table: str) -> List[Tuple[str, str, str, str]]:
+        """FK edges touching a table, oriented from it: (table, column, other_table, other_column)."""
+        out = []
+        for t, c, rt, rc in self.foreign_keys:
+            if t == table:
+                out.append((t, c, rt, rc))
+            elif rt == table:
+                out.append((rt, rc, t, c))
+        return out
+
+    # -- rendering ------------------------------------------------------------
+    def to_mschema(self, selected_columns: Optional[List[str]] = None, example_num: int = 3,
+                   extra_examples: Optional[Dict[str, List[str]]] = None) -> str:
+        sel = None if selected_columns is None else {s.lower() for s in selected_columns}
+        tabs = None if sel is None else {s.split(".")[0] for s in sel}
+        extra = {k.lower(): list(v) for k, v in (extra_examples or {}).items()}
+        out = [f"【DB_ID】 {self.db_id}", "【Schema】"]
+        for t, ti in self.tables.items():
+            if tabs is not None and t.lower() not in tabs:
+                continue
+            out.append(f"# Table: {t}, {ti['comment']}" if ti.get("comment") else f"# Table: {t}")
+            lines = []
+            for c, f in ti["fields"].items():
+                key = f"{t}.{c}".lower()
+                if sel is not None and key not in sel:
+                    continue
+                line = f"({c}:{f['type'].upper()}"
+                if f.get("comment"):
+                    line += f", {f['comment']}"
+                if f.get("primary_key"):
+                    line += ", Primary Key"
+                retrieved = extra.get(key, [])
+                ex = list(dict.fromkeys(str(e) for e in retrieved + f.get("examples", []) if e is not None))
+                ex = ex[:max(example_num, len(retrieved))]
+                if f["type"].upper() in ("DATE", "TIMESTAMP"):
+                    ex = ex[:1]
+                elif ex and max(len(e) for e in ex) > 50 and not retrieved:
+                    ex = []
+                if ex:
+                    line += f", Examples: [{', '.join(ex)}]"
+                lines.append(line + ")")
+            out.append("[")
+            out.append(",\n".join(lines))
+            out.append("]")
+        fks = [fk for fk in self.foreign_keys if tabs is None or (fk[0].lower() in tabs and fk[2].lower() in tabs)]
+        if fks:
+            out.append("【Foreign keys】")
+            out.extend(f"{t}.{c}={rt}.{rc}" for t, c, rt, rc in fks)
+        return "\n".join(out)
+
+    def dump(self) -> Dict:
+        return {"db_id": self.db_id, "tables": self.tables, "foreign_keys": self.foreign_keys, "issues": self.issues}
+
+
+def verify_keys(V: Dict[str, pd.DataFrame]) -> Tuple[Dict[str, List[str]], List[Tuple[str, str, str, str]], List[str]]:
+    """Keep only key declarations that hold on the data: PK unique and non-null; FK values (mostly) present in
+    the referenced key (>= 95 %: hand-kept books contain a few dangling ids)."""
+    issues, pks, fks = [], {}, []
+    for t, meta in VIEW_KEYS.items():
+        if t not in V:
+            continue
+        pk = [c for c in meta.get("pk", []) if c in V[t].columns]
+        if pk and len(pk) == len(meta["pk"]):
+            df = V[t][pk]
+            if df.isna().any().any() or df.duplicated().any():
+                issues.append(f"{t}: ({', '.join(pk)}) is not unique / has nulls -> no primary key")
+                pk = []
+        else:
+            pk = []
+        pks[t] = pk
+    for t, c, rt, rc in VIEW_FKS:
+        if t not in V or rt not in V or c not in V[t].columns or rc not in V[rt].columns:
+            continue
+        child = V[t][c].dropna()
+        if child.empty:
+            continue
+        ok = float(child.isin(set(V[rt][rc].dropna())).mean())
+        if ok >= 0.95:
+            fks.append((t, c, rt, rc))
+        else:
+            issues.append(f"{t}.{c} -> {rt}.{rc}: only {ok:.0%} of values match -> no foreign key")
+    return pks, fks, issues
+
+
+def build_mschema(biz_id: str, V: Dict[str, pd.DataFrame], n_examples: int = 3) -> MSchema:
+    ms = MSchema(biz_id)
+    pks, fks, ms.issues = verify_keys(V)
     for name, df in V.items():
-        desc, cols = VIEW_DOCS.get(name, ("", {}))
-        out.append(f"# Table: {name}, {desc}")
-        out.append("[")
-        rows = []
+        desc, docs = VIEW_DOCS.get(name, ("", {}))
+        meta = VIEW_KEYS.get(name, {})
+        ms.add_table(name, desc, meta.get("date"), meta.get("guards"))
         for c in df.columns:
             ex = [str(v) for v in df[c].dropna().astype(str).unique()[:n_examples]]
-            pk = ", Primary Key" if (name == "orders" and c == "order_id") or (name == "products" and c == "product_key") else ""
-            rows.append(f"({c}:{_type(df[c])}{pk}, {cols.get(c, '')}, Examples: [{', '.join(ex)}])")
-        out.append(",\n".join(rows))
-        out.append("]")
-    out.append("【Foreign keys】")
-    if "sales_lines" in V and "orders" in V:
-        out.append("sales_lines.order_id=orders.order_id")
-    if "payments" in V:
-        out.append("payments.order_id=orders.order_id")
-    if "sales_lines" in V and "products" in V:
-        out.append("sales_lines.product_key=products.product_key")
-    if "purchase_lines" in V:
-        out.append("purchase_lines.receipt_id=purchases.receipt_id")
-    return "\n".join(out)
+            ms.add_field(name, c, _type(df[c]), c in pks.get(name, []), docs.get(c, ""), ex)
+    for t, c, rt, rc in fks:
+        ms.add_foreign_key(t, c, rt, rc)
+    return ms
+
+
+def render_mschema(biz_id: str, V: Dict[str, pd.DataFrame], n_examples: int = 3) -> str:
+    """Full-schema M-Schema text (the baseline / fallback schema of the Schema Filter)."""
+    return build_mschema(biz_id, V, n_examples).to_mschema()
