@@ -4,20 +4,6 @@ Môi trường phát triển: Windows, CPU 16 luồng, **không GPU** ⇒ các g
 bằng LLM giả lập (`tests/test_agent_mock.py`), chưa đo độ chính xác. Mọi số dưới đây là của
 `python -m datamate.predict --llm none`.
 
-## 1. Train (3.000 câu, 30 shop) — có đáp án
-
-| Chế độ | Đúng | Sai | Bỏ trống | PA | Thời gian |
-|---|---:|---:|---:|---:|---:|
-| Agent đầy đủ (G1 + coverage + selector) | 3.000 | 0 | 0 | **1.000** | ~4 phút (gồm nạp 30 shop từ cache) |
-| Câu hỏi train **bị làm nhiễu** kiểu public (`scripts/eval_noise.py`, mức 0.7) | 2.990 | 0 | 10 | **0.997** | |
-
-> **Đọc đúng con số:** PA = 1.000 là **trong mẫu** — luật được viết trong lúc phân tích lỗi trên chính các câu
-> train này (không mã hoá đáp án hay id; mọi xử lý suy ra từ file + README + rulebook). Bản nhiễu (bỏ dấu, gõ
-> Telex sai, viết tắt, phương ngữ, ngày viết tắt "Th7/25"…) ước lượng hành vi trên câu hỏi lộn xộn: **0 câu sai**,
-> 0.3 % bỏ trống. Lưu ý: bộ sinh nhiễu và bộ chuẩn hoá dùng chung hiểu biết về viết tắt nên con số này lạc quan;
-> câu hỏi public/private còn nhiều kiểu nhiễu và khái niệm mới hơn (xem §2).
-
-Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 0.972 → 0.998 → 1.000.
 
 ### Phân bố intent mà G1 nhận diện trên train
 
