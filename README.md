@@ -212,18 +212,6 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 
 Chi tiết breakdown theo intent, thay đổi giữa hai bản và phân tích lỗi nằm trong [báo cáo kết quả](docs/RESULTS.md). File kết quả CPU được lưu tại [`submissions/public_test_rule_only.jsonl`](submissions/public_test_rule_only.jsonl).
 
-### 4.2. Các thành phần XiYan đo được không cần LLM (train, trong mẫu)
-
-| Thành phần | Phép đo | Kết quả | Lệnh |
-|---|---|---|---|
-| Silver SQL (frame → SQL → thực thi → so đáp án) | câu train có SQL đã kiểm chứng | **1.671** / 1.689 SQL biên dịch được (98,9 %), 3 định dạng / câu | `python scripts/build_sql_silver.py data/train` |
-| Schema Filter (bộ chọn cột heuristic, không LLM) | tỉ lệ câu mà schema giữ **đủ mọi cột** SQL đúng cần, số cột trung bình | S1: **91,5 %**, 11,1 cột · S2: **99,6 %**, 16,9 cột · full: 100 %, 42,3 cột | `python scripts/eval_schema_filter.py data/train` |
-| SQL checks | báo động nhầm trên 5.013 SQL đúng | **0** (0,0 %) | `python scripts/eval_sql_checks.py data/train` |
-| SQL checks | phát hiện near-miss làm đổi đáp án | thiếu `is_valid` 93 % · lệch tháng 100 % · `<` bỏ ngày cuối 99 % · JOIN nhân bản 100 % · `total_due` thay doanh thu 95 % · sai `LIMIT` 100 % | như trên |
-| Selector / calibration | business-level 5-fold trên log G1 | PA 0,9997, Brier 0,0011, ECE 0,022 (lạc quan: luật G1 viết trên toàn train) | `python scripts/validate.py runs/train/logs data/train/answers.jsonl` |
-
-Các số này **trong mẫu**: thuật ngữ của Schema Filter và luật G1 được viết khi đọc train. Chúng cho biết các thành phần làm đúng việc, **không** phải điểm generalization. Phần cần LLM (keyword/chọn cột bằng Qwen3-14B, sinh SQL, selection model) mới chạy với mock LLM (`tests/test_xiyan_pipeline.py`) và cần benchmark trên GPU.
-
 ## 5. Cấu trúc repository
 
 ```text
