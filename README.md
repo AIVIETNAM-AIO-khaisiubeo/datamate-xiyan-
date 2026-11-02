@@ -131,35 +131,6 @@ Test mock-LLM ở `tests/test_agent_mock.py` tự bỏ qua khi không có dữ l
 
 Hệ thống **không dùng LLM để tự tính tiền hay đếm số đơn**. LLM chủ yếu hỗ trợ hiểu yêu cầu và sinh truy vấn; phép tính được giao cho business engine hoặc DuckDB.
 
-```mermaid
-flowchart TD
-    Q["Câu hỏi tiếng Việt + as_of_date"] --> N["Chuẩn hóa văn bản, thời gian, liên kết thực thể"]
-    D["CSV / Excel / SQLite + README business"] --> I["Ingestion + schema linking"]
-    RB["rulebook.md + calendar.csv"] --> I
-    I --> B["Canonical business data (Biz)"]
-    N --> G1["G1: Rule parser → Frame DSL"]
-    N --> G3["G3: LLM rewrite"]
-    N --> G2["G2: LLM JSON frame"]
-    G3 --> G1
-    G2 --> G1
-    B --> E["Deterministic business executor"]
-    G1 --> E
-    E --> C["Candidate answers"]
-    N --> G4["G4: LLM text-to-SQL (fallback)"]
-    B --> V["Normalized DuckDB views / M-Schema"]
-    V --> G4
-    G4 --> SQL["Execute SQL + repair on error"]
-    SQL --> C
-    C --> S["Group by result + confidence voting"]
-    S --> T{"Confidence ≥ tau?"}
-    T -->|Yes| A["Typed answer / unanswerable"]
-    T -->|No| AB["abstain"]
-    A --> O["submission.jsonl + logs"]
-    AB --> O
-```
-
-*G3 và G2 tạo ứng viên thông qua G1, còn G4 là nhánh SQL dự phòng khi các ứng viên hiện có chưa đủ tin cậy. G2–G4 chỉ chạy khi bật backend LLM và còn ngân sách thời gian.*
-
 ### 3.1. Ingestion & Schema Linking
 
 **Code:** `datamate/ingest/`, `datamate/values.py`.
