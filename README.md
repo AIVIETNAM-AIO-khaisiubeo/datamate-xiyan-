@@ -202,10 +202,8 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 | Split / phiên bản | Đáp án giá trị | `unanswerable` | `abstain` | PA |
 |---|---:|---:|---:|---:|
 | Public test, submission 1 (1.000 câu) | 850 | 21 | 129 | **0.561** (điểm BTC) |
-| Public test, phiên bản 2 | 920 | 22 | 58 | **Chưa chấm** |
+| Public test, phiên bản 2 | 920 | 22 | 58 | **0,912 (điểm BTC)** |
 
-- **Public bản 1:** PA 0.561 do leaderboard cung cấp; số câu đúng/sai không được gắn nhãn trong public test.
-- **Public bản 2:** số câu trả lời và bỏ trống là thống kê inference. **Chưa có điểm PA xác nhận**, vì không có ground-truth public.
 
 Chi tiết breakdown theo intent, thay đổi giữa hai bản và phân tích lỗi nằm trong [báo cáo kết quả](docs/RESULTS.md). File kết quả CPU được lưu tại [`submissions/public_test_rule_only.jsonl`](submissions/public_test_rule_only.jsonl).
 
