@@ -172,13 +172,11 @@ Các phép tính tuân theo quy tắc nghiệp vụ của split: loại đơn h�
 
 **Code:** `datamate/select/selector.py`, `datamate/nlu/consistency.py`, `datamate/nlu/coverage.py`.
 
-Mỗi generator có thể đưa ra một đáp án ứng viên. Selector **gom nhóm theo giá trị đáp án đã thực thi**, kết hợp độ tin cậy theo generator/intent và trừ điểm khi các ứng viên mâu thuẫn. Các tín hiệu rủi ro gồm từ chưa giải thích được, câu hỏi và kiểu đáp án mâu thuẫn, tie ở ranh giới top-k hoặc luật nghiệp vụ thay đổi.
-
-Hệ thống trả lời khi điểm tin cậy qua ngưỡng, ngược lại chọn `abstain`. Các xác suất này là **ước lượng heuristic/calibrated reliability**, chưa nên coi là xác suất thống kê được hiệu chỉnh hoàn hảo trên dữ liệu chưa gặp.
+Mỗi generator có thể đưa ra một đáp án ứng viên. Selector **gom nhóm theo giá trị đáp án đã thực thi**, kết hợp độ tin cậy theo generator/intent và trừ điểm khi các ứng viên mâu thuẫn. Các tín hiệu rủi ro gồm từ chưa giải thích được, câu hỏi và kiểu đáp án mâu thuẫn, tie ở ranh giới top-k hoặc luật nghiệp vụ thay đổi. Hệ thống trả lời khi điểm tin cậy qua ngưỡng, ngược lại chọn `abstain`. 
 
 Với ứng viên SQL, selector còn **đọc nội dung SQL** (`datamate/select/sql_checks.py`): thiếu `is_valid`, cột ngày / khoảng thời gian sai, chặn trên dạng `<` bỏ mất ngày cuối, JOIN nhân bản dòng khi cộng cột cấp đơn, dùng tiền đã trả (`payments`, `total_due`) thay cho doanh thu, xếp hạng mặt hàng không lọc `kind = 'item'`, `LIMIT` khác top-k của câu hỏi, kết quả nhiều dòng khi cần một giá trị. Mỗi cờ hạ độ tin cậy của ứng viên. **Nhiều SQL của cùng một model không phải các phiếu độc lập:** selector gom theo *model family*, mỗi family chỉ có một phiếu trong mỗi nhóm đáp án, dù model đó sinh ở bao nhiêu schema hay định dạng.
 
-### 3.6. Tương ứng với XiYan-SQL (Paper7, repo `alibaba/XiYan-SQL`)
+### 3.6. Các function build từ XiYan-SQL 
 
 | Thành phần trong paper | Trong repo | File |
 |---|---|---|
