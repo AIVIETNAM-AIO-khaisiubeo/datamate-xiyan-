@@ -180,7 +180,6 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 
 | Split / phiên bản | Đáp án giá trị | `unanswerable` | `abstain` | PA |
 |---|---:|---:|---:|---:|
-| Train (3.000 câu, 30 business) | — | — | 0 | **1.000** |
 | Public test, submission 1 (1.000 câu) | 850 | 21 | 129 | **0.561** (điểm BTC) |
 | Public test, phiên bản 2 | 920 | 22 | 58 | **Chưa chấm** |
 
