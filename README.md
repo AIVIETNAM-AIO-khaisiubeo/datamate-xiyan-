@@ -430,7 +430,7 @@ docker run --rm --gpus all --network none \
 
 ## 9. Tạo `submission.jsonl` để nộp leaderboard
 
-Các bước dưới đây giả định repo đã có đủ code và `data/train`, `data/public_test`. Lệnh viết cho bash (Linux, macOS, Git Bash); với PowerShell, thay `export X=y` bằng `$env:X = "y"`.
+Lệnh viết cho bash (Linux, macOS, Git Bash); với PowerShell, thay `export X=y` bằng `$env:X = "y"`.
 
 **Bước 1 — Cài đặt và kiểm tra môi trường**
 
