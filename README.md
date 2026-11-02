@@ -510,7 +510,6 @@ Thiết kế của repo **lấy cảm hứng** từ:
 - **XiYan-SQL: A Novel Multi-Generator Framework for Text-to-SQL** — schema filtering, multi-generator và lựa chọn ứng viên theo kết quả thực thi.
 - **When Silence is Golden: Can LLMs Learn to Abstain in Temporal QA and Beyond?** — học và ra quyết định từ chối trả lời để hạn chế lỗi.
 
-Repo này là một **ứng dụng điều chỉnh theo bài toán DataMate**, không phải bản triển khai chính thức hoặc tái tạo nguyên xi hai công trình.
 
 ---
 
