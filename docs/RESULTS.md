@@ -23,7 +23,7 @@ bằng LLM giả lập (`tests/test_agent_mock.py`), chưa đo độ chính xác
 | price_effect | 84 | | |
 | avg_purchase_price | 63 | | |
 
-## 2. Public test (1.000 câu, 14 shop) — **không có đáp án**
+## Public test (1.000 câu, 14 shop) 
 
 | | Bản nộp 1 (điểm BTC **0.561**) | Bản 2 (hiện tại) |
 |---|---:|---:|
