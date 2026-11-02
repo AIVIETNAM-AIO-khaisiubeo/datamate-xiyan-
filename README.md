@@ -109,9 +109,6 @@ làm việc nó giỏi: hiểu câu hỏi lộn xộn; nó *không* tự cộng 
 |---|---:|---|---|---|
 | `Qwen/Qwen3-14B` | 14.8B | 04/2025 | Apache-2.0 | G2/G3/G4 (LLM duy nhất) |
 
-Không dùng embedding model / reranker (truy xuất few-shot bằng TF-IDF ký tự) ⇒ tổng tham số 14.8B ≤ 15B.
-Có thể thay bằng bản lượng tử hoá (`Qwen/Qwen3-14B-AWQ`) hoặc bản đã fine-tune (LoRA merge giữ nguyên số tham số).
-
 ## 4. Cài đặt & chạy
 
 ```bash
