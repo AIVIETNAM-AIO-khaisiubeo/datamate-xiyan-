@@ -7,6 +7,9 @@ Tài liệu này dành cho người đã clone repo, có `data/train` và `data/
 2. fine-tune Qwen3-14B cho các nhiệm vụ của agent rồi dùng model đó để nộp bài;
 3. vẫn tuân thủ luật Zalo AI Challenge 2026.
 
+> Dùng **Google Colab Pro**: có notebook làm sẵn mọi bước của Phần F, kèm lưu adapter về GitHub. Xem
+> [`COLAB_GUIDE.md`](COLAB_GUIDE.md).
+
 Mục lục:
 - [Phần A — Khi bật LLM, hệ thống làm gì](#phần-a--khi-bật-llm-hệ-thống-làm-gì)
 - [Phần B — Kiểm tra tuân thủ luật](#phần-b--kiểm-tra-tuân-thủ-luật)
@@ -341,7 +344,9 @@ python scripts/check_submission.py runs/public_ft/submission.jsonl data/public_t
 ```bash
 # Model gốc (tải lúc build):
 docker build -t datamate-xiyan:final .
-# Model đã fine-tune (outputs/merged phải có sẵn; cần Docker BuildKit):
+# Model gốc + adapter LoRA đã commit trong models/adapter (không cần model merge 30 GB; chạy git lfs pull trước):
+docker build -f Dockerfile.lora -t datamate-xiyan:lora .
+# Model đã fine-tune và merge (outputs/merged phải có sẵn; cần Docker BuildKit):
 docker build -f Dockerfile.finetuned -t datamate-xiyan:ft .
 
 # Chạy đúng như môi trường chấm: offline, dữ liệu chỉ-đọc ở /data, kết quả ở /result
@@ -357,6 +362,7 @@ Biến môi trường dùng được khi `docker run -e ...`:
 |---|---|
 | `DATAMATE_LLM` | `vllm` (mặc định) hoặc `none` |
 | `DATAMATE_TP` | số GPU |
+| `DATAMATE_LORA` | thư mục adapter LoRA (đặt sẵn trong `Dockerfile.lora`) |
 | `DATAMATE_QUANT` | lượng tử hoá, ví dụ `fp8` |
 | `DATAMATE_MAX_LEN` | `max_model_len` của vLLM |
 | `DATAMATE_GPU_UTIL` | `gpu_memory_utilization` của vLLM |

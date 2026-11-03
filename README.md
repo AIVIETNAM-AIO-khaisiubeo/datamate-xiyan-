@@ -264,17 +264,22 @@ datamate-xiyan-/
 │   ├── validate.py             # Business-level K-fold: PA, ECE, Brier, quét τ, log lỗi
 │   ├── check_submission.py     # Kiểm tra định dạng submission.jsonl trước khi nộp
 │   ├── count_params.py         # Tổng tham số mọi model dùng khi suy luận (≤ 15B)
+│   ├── publish_hf.py           # Đưa adapter / model merge lên Hugging Face Hub (private)
 │   └── ...                     # Công cụ kiểm tra và debug
 ├── artifacts/                  # Vocab, example bank, reliability
 ├── tests/                      # Unit tests và mock-LLM integration test
 ├── docs/RESULTS.md             # Số liệu và phân tích thực nghiệm
 ├── docs/GPU_FINETUNE_GUIDE.md  # Chạy G1–G4 với Qwen3-14B, hiệu chuẩn, fine-tune từng bước
+├── docs/COLAB_GUIDE.md         # Fine-tune trên Colab Pro, lưu adapter về GitHub (Git LFS)
+├── notebooks/colab_finetune.ipynb  # Notebook Colab (sinh bởi scripts/make_colab_notebook.py)
+├── models/                     # Adapter LoRA đã fine-tune (Git LFS), xem models/README.md
 ├── submissions/                # File submission CPU hiện có
 ├── data/                       # train/ và public_test/ (đã kèm trong repo)
 ├── requirements.txt
 ├── requirements-train.txt
 ├── Dockerfile                  # image với Qwen3-14B gốc (tải lúc build)
 ├── Dockerfile.finetuned        # image với model đã fine-tune + merge (outputs/merged)
+├── Dockerfile.lora             # image = Qwen3-14B tải lúc build + adapter trong models/adapter
 └── predict.sh                  # Entry point của Docker
 ```
 
@@ -284,6 +289,10 @@ datamate-xiyan-/
 > **Hướng dẫn đầy đủ từng bước** (chạy G1–G4 với Qwen3-14B trên public test, hiệu chuẩn, ablation, fine-tune hai
 > pha có fold giữ riêng, Docker cho model đã fine-tune, kiểm tra luật): [`docs/GPU_FINETUNE_GUIDE.md`](docs/GPU_FINETUNE_GUIDE.md).
 > Mục này chỉ tóm tắt các lệnh.
+>
+> **Dùng Google Colab Pro?** Notebook [`notebooks/colab_finetune.ipynb`](notebooks/colab_finetune.ipynb) chạy toàn bộ:
+> train (checkpoint trên Drive, tự train tiếp khi mất kết nối), đánh giá trên fold giữ riêng, tạo file nộp, đẩy adapter
+> lên một nhánh GitHub qua Git LFS. Hướng dẫn: [`docs/COLAB_GUIDE.md`](docs/COLAB_GUIDE.md).
 
 ### 6.1. Backbone và vai trò
 
@@ -403,6 +412,7 @@ Tuỳ chọn khi chạy (cũng đặt được qua biến môi trường, xem `d
 | `--generators g2,g3,g4` | bật hoặc tắt từng generator LLM (ablation); G1 luôn chạy |
 | `--g4-scope unresolved\|all` | G4 chỉ chạy câu chưa chắc (mặc định) hoặc mọi câu |
 | `--fold K` | chỉ chạy các shop của fold K (đánh giá trên shop mà model fine-tune chưa thấy) |
+| `--lora DIR` | adapter LoRA đã fine-tune, chạy cạnh `--model` (base 14,77B + adapter 0,13B ≤ 15B) |
 | `--tau` | ngưỡng abstain |
 
 Trên split có `answers.jsonl` (train), agent tự loại few-shot của chính shop đang hỏi, để số đo và hiệu chuẩn không bị lộ đáp án.

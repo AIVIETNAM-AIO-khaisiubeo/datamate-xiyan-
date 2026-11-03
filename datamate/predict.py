@@ -15,6 +15,7 @@ def main(argv=None):
     ap.add_argument("--logs", default=None, help="per-question log dir (default: <out dir>/logs)")
     ap.add_argument("--llm", default=None, choices=[None, "none", "vllm", "hf"], help="override LLM backend")
     ap.add_argument("--model", default=None, help="model directory")
+    ap.add_argument("--lora", default=None, help="fine-tuned LoRA adapter directory, served next to --model")
     ap.add_argument("--tau", type=float, default=None, help="abstention threshold")
     ap.add_argument("--limit", type=int, default=0, help="debug: only first N questions")
     ap.add_argument("--only", nargs="*", default=None, help="debug: only these business ids")
@@ -36,6 +37,8 @@ def main(argv=None):
         cfg["llm"]["backend"] = a.llm
     if a.model:
         cfg["llm"]["model_path"] = a.model
+    if a.lora:
+        cfg["llm"]["lora_path"] = a.lora
     if a.tau is not None:
         cfg["tau"] = a.tau
     for k, v in (("tensor_parallel_size", a.tp), ("quantization", a.quant), ("max_model_len", a.max_len),

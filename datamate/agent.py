@@ -39,6 +39,7 @@ def default_config() -> dict:
     return {
         "llm": {"backend": os.environ.get("DATAMATE_LLM", "none"),
                 "model_path": os.environ.get("DATAMATE_MODEL", "/models/llm"),
+                "lora_path": os.environ.get("DATAMATE_LORA") or None,      # fine-tuned adapter next to the base model
                 "tensor_parallel_size": int(os.environ.get("DATAMATE_TP", "2")),
                 "max_model_len": int(os.environ.get("DATAMATE_MAX_LEN", "16384")),
                 "gpu_memory_utilization": float(os.environ.get("DATAMATE_GPU_UTIL", "0.88")),
