@@ -6,7 +6,9 @@ From a run's per-question logs (every generator's candidates are logged) this sc
   3. re-runs the selector on the held-out fold and reports PA, coverage, precision when answering,
      Brier score and ECE of the selector's probability, a reliability diagram and a tau sweep,
   4. writes every wrong answer to <out>/errors.jsonl (question, intent, generators, p) for error analysis,
-  5. optionally writes reliabilities fitted on all folds (--write-reliability), e.g. after a GPU run.
+  5. optionally writes reliabilities fitted on all the given logs (--write-reliability), e.g. after a GPU run on
+     shops the fine-tuned model never saw (predict --fold K with a model trained with --holdout-fold K).
+     Only the LLM generators are written unless --include-g1.
 
     python scripts/validate.py runs/train/logs data/train/answers.jsonl --folds 5 [--write-reliability artifacts/reliability.json]
 
@@ -113,10 +115,13 @@ def main():
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--out", default=os.path.join(ROOT, "runs", "validate"))
     ap.add_argument("--write-reliability", default=None)
+    ap.add_argument("--include-g1", action="store_true",
+                    help="also overwrite G1_rule reliabilities (default: only the LLM generators are written)")
     a = ap.parse_args()
     recs = load(a.logs, a.answers)
     shops = sorted({r["biz"] for r in recs})
-    fold_of = {b: i % a.folds for i, b in enumerate(shops)}
+    from datamate.folds import fold_of as _fold_of
+    fold_of = _fold_of(shops, a.folds)               # same shop -> fold assignment as training / predict --fold
     rows = []
     for f in range(a.folds):
         rel = fit([r for r in recs if fold_of[r["biz"]] != f])
@@ -145,6 +150,8 @@ def main():
     print(f"  wrong answers -> {os.path.join(a.out, 'errors.jsonl')}")
     if a.write_reliability:
         rel = fit(recs)
+        if not a.include_g1:
+            rel.pop("G1_rule", None)
         try:
             cur = json.load(open(a.write_reliability, encoding="utf-8"))
         except Exception:  # noqa: BLE001

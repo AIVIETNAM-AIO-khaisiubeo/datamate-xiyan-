@@ -18,6 +18,14 @@ def main(argv=None):
     ap.add_argument("--tau", type=float, default=None, help="abstention threshold")
     ap.add_argument("--limit", type=int, default=0, help="debug: only first N questions")
     ap.add_argument("--only", nargs="*", default=None, help="debug: only these business ids")
+    ap.add_argument("--fold", type=int, default=None, help="only the shops of held-out fold K (see datamate/folds.py)")
+    ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--tp", type=int, default=None, help="tensor parallel size (GPUs), default $DATAMATE_TP or 2")
+    ap.add_argument("--quant", default=None, help="vLLM quantization, e.g. fp8 (same model, smaller GPU)")
+    ap.add_argument("--max-len", type=int, default=None, help="vLLM max_model_len")
+    ap.add_argument("--gpu-util", type=float, default=None, help="vLLM gpu_memory_utilization")
+    ap.add_argument("--generators", default=None, help="LLM generators to run, e.g. g2,g3,g4 or g3 (G1 always runs)")
+    ap.add_argument("--g4-scope", default=None, choices=[None, "unresolved", "all"], help="G4 on unresolved or all questions")
     a = ap.parse_args(argv)
 
     os.environ.setdefault("DATAMATE_CACHE", "/tmp/datamate_cache")
@@ -30,11 +38,25 @@ def main(argv=None):
         cfg["llm"]["model_path"] = a.model
     if a.tau is not None:
         cfg["tau"] = a.tau
+    for k, v in (("tensor_parallel_size", a.tp), ("quantization", a.quant), ("max_model_len", a.max_len),
+                 ("gpu_memory_utilization", a.gpu_util)):
+        if v is not None:
+            cfg["llm"][k] = v
+    if a.generators is not None:
+        gens = {g.strip().lower() for g in a.generators.split(",")}
+        cfg["use_g2"], cfg["use_g3"], cfg["use_g4"] = "g2" in gens, "g3" in gens, "g4" in gens
+    if a.g4_scope:
+        cfg["g4_scope"] = a.g4_scope
     qpath = os.path.join(a.data, "questions.jsonl")
     with open(qpath, encoding="utf-8") as fh:
         qs = [json.loads(l) for l in fh if l.strip()]
     if a.only:
         qs = [q for q in qs if q["business_id"] in set(a.only)]
+    if a.fold is not None:
+        from .folds import fold_shops
+        keep = fold_shops({q["business_id"] for q in qs}, a.fold, a.folds)
+        qs = [q for q in qs if q["business_id"] in keep]
+        print(f"[datamate] fold {a.fold}/{a.folds}: shops {sorted(keep)}", file=sys.stderr)
     if a.limit:
         qs = qs[: a.limit]
     log_dir = a.logs or os.path.join(os.path.dirname(os.path.abspath(a.out)), "logs")

@@ -74,7 +74,13 @@ def main():
     ap.add_argument("--out", default=os.path.join(ROOT, "outputs", "sql_sft"))
     ap.add_argument("--n-aug", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--holdout-fold", type=int, default=None, help="leave the shops of this fold out (evaluation)")
+    ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--no-shots", action="store_true", help="train without few-shot SQL in the prompt")
     a = ap.parse_args()
+    from datamate.agent import load_sql_bank
+    from datamate.folds import fold_shops
+    from datamate.llm.sql_pipeline import MultiSQLGenerator
     rng = random.Random(a.seed)
     rb_text = open(os.path.join(a.split, "rulebook.md"), encoding="utf-8").read()
     rows_rb = rulebook_rows(rb_text)
@@ -83,6 +89,12 @@ def main():
     by = collections.defaultdict(list)
     for it in items:
         by[it["business_id"]].append(it)
+    all_shops = {json.loads(l)["business_id"] for l in open(os.path.join(a.split, "questions.jsonl"), encoding="utf-8")}
+    holdout = fold_shops(all_shops, a.holdout_fold, a.folds) if a.holdout_fold is not None else set()
+    if holdout:
+        print("held-out shops (not in the training data):", sorted(holdout))
+    bank = None if a.no_shots else load_sql_bank(a.silver)
+    shot_gen = MultiSQLGenerator(None, bank)          # only its few-shot selection: the same examples G4 sees
     os.makedirs(a.out, exist_ok=True)
     recs, stat = [], collections.Counter()
 
@@ -91,6 +103,10 @@ def main():
         stat[task] += 1
 
     for bid, lst in sorted(by.items()):
+        if bid in holdout:
+            continue
+        if bank is not None:
+            bank.exclude = {bid} | holdout
         b = load_biz(os.path.join(a.split, "data", bid), bid)
         V = build_views(b)
         ms = build_mschema(bid, V)
@@ -109,7 +125,8 @@ def main():
             # (a) text-to-SQL, one record per verified format and question variant
             for fmt, sql in it["sql"].items():
                 for v in variants:
-                    add(f"nl2sql_{fmt}", P.NL2SQL_SYSTEM, P.nl2sql_user(v, schema, evid, fmt), sql + "\n```")
+                    shots = shot_gen._shots(v, fmt) if bank is not None else []
+                    add(f"nl2sql_{fmt}", P.NL2SQL_SYSTEM, P.nl2sql_user(v, schema, evid, fmt, shots), sql + "\n```")
             # (b) question inference
             add("question_inference", "Bạn là chuyên gia SQL. Đọc 【Schema】, 【Thông tin tham khảo】 và 【SQL】, viết câu hỏi tiếng "
                 "Việt tự nhiên mà SQL này trả lời.", f"【Schema】\n{schema}\n\n【Thông tin tham khảo】\n{evid}\n\n【SQL】\n{base}\n\n【Câu hỏi】", q)

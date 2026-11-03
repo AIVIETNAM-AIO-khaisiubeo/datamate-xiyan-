@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import sys
 import time
 import traceback
 from collections import OrderedDict, defaultdict
@@ -39,13 +40,19 @@ def default_config() -> dict:
         "llm": {"backend": os.environ.get("DATAMATE_LLM", "none"),
                 "model_path": os.environ.get("DATAMATE_MODEL", "/models/llm"),
                 "tensor_parallel_size": int(os.environ.get("DATAMATE_TP", "2")),
-                "max_model_len": 16384, "gpu_memory_utilization": 0.88, "enable_thinking": False},
+                "max_model_len": int(os.environ.get("DATAMATE_MAX_LEN", "16384")),
+                "gpu_memory_utilization": float(os.environ.get("DATAMATE_GPU_UTIL", "0.88")),
+                "quantization": os.environ.get("DATAMATE_QUANT") or None,       # e.g. 'fp8' on a single 24-32 GB GPU
+                "enable_thinking": False},
         "bank_path": os.path.join(ROOT, "artifacts", "example_bank.jsonl"),
         "reliability_path": os.path.join(ROOT, "artifacts", "reliability.json"),
         "vocab_path": os.path.join(ROOT, "artifacts", "known_vocab.json"),
         "tau": float(os.environ.get("DATAMATE_TAU", "0.6")),
         "time_budget_s": float(os.environ.get("DATAMATE_TIME_BUDGET", str(5.5 * 3600))),
-        "use_g2": True, "use_g3": True, "use_g4": True,
+        # generators (ablation): DATAMATE_GENS="g2,g3,g4" by default; G1 always runs
+        "use_g2": "g2" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
+        "use_g3": "g3" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
+        "use_g4": "g4" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
         "g4_max_per_biz": 60,
         # XiYan pipeline for G4: filtered schemas (S1, S2) + full-schema baseline, SQL formats, selection model
         "g4_schemas": ["S1", "S2", "full"],
@@ -65,6 +72,7 @@ class DataMateAgent:
         self.rulebook_text = open(rb_path, encoding="utf-8").read() if os.path.exists(rb_path) else ""
         self.rulebook = parse_rulebook(self.rulebook_text)
         self.cal = LunarCalendar(os.path.join(split_dir, "calendar.csv"))
+        self.labelled = os.path.exists(os.path.join(split_dir, "answers.jsonl"))
         self.selector = Selector(self.cfg["reliability_path"], tau=self.cfg["tau"])
         from .nlu.coverage import load_vocab
         self.vocab = load_vocab(self.cfg.get("vocab_path"))
@@ -84,6 +92,10 @@ class DataMateAgent:
             return
         from .llm.generators import ExampleBank, FrameGenerator, RewriteGenerator, SQLGenerator
         bank = ExampleBank.load(self.cfg["bank_path"]) if os.path.exists(self.cfg["bank_path"]) else None
+        self._banks = [x for x in (bank,) if x is not None]
+        if self.labelled and bank is not None and not bank.has_shop_ids:
+            print("[llm] WARNING: few-shot bank has no shop ids -> own-shop examples are not excluded on this labelled "
+                  "split; rebuild with scripts/build_artifacts.py", file=sys.stderr)
         digest = rulebook_digest(self.rulebook_text)
         self.g3 = RewriteGenerator(self.backend, bank)
         self.g2 = FrameGenerator(self.backend, bank, digest)
@@ -91,6 +103,8 @@ class DataMateAgent:
         from .llm.sql_pipeline import MultiSQLGenerator
         from .select.selection_model import SelectionModel
         self.mgen = MultiSQLGenerator(self.backend, load_sql_bank(self.cfg.get("sql_bank_path")))
+        if self.mgen.bank is not None:
+            self._banks.append(self.mgen.bank)
         self.selmodel = SelectionModel(self.backend) if self.cfg.get("use_selection_model") else None
 
     def time_left(self) -> float:
@@ -144,9 +158,13 @@ class DataMateAgent:
             log["elapsed_g1_s"] = round(time.time() - tq, 4)
             logs[q["id"]] = log
         # ---------------------------------------------------------------- LLM generators
-        if self.cfg["llm"].get("backend", "none") != "none" and self.time_left() > 600:
+        llm_on = any(self.cfg.get(k) for k in ("use_g2", "use_g3", "use_g4"))
+        if self.cfg["llm"].get("backend", "none") != "none" and llm_on and self.time_left() > 600:
             self._init_llm()
             if self.backend is not None:
+                # labelled split (train): never show a shop its own examples (honest evaluation / calibration)
+                for bk in getattr(self, "_banks", []):
+                    bk.exclude = {bid} if self.labelled else set()
                 try:
                     self._llm_stage(biz, rp, items, cands, logs)
                 except Exception:
@@ -342,7 +360,7 @@ def load_sql_bank(path: Optional[str]):
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             r = json.loads(line)
-            items.append({"q": r["question"], "intent": r["intent"], "sql": r["sql"]})
+            items.append({"q": r["question"], "intent": r["intent"], "sql": r["sql"], "biz": r["business_id"]})
     return ExampleBank(items) if items else None
 
 

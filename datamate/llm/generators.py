@@ -29,6 +29,9 @@ from . import prompts as P
 class ExampleBank:
     def __init__(self, items: List[dict]):
         self.items = items
+        # shops whose examples must not be shown (leave-one-business-out when evaluating on a labelled split:
+        # otherwise a train question would retrieve its own gold frame / SQL as a few-shot example)
+        self.exclude: set = set()
         self.df = Counter()
         self.vecs = []
         for it in items:
@@ -58,6 +61,8 @@ class ExampleBank:
         out, seen = [], Counter()
         for sc, i in scores:
             it = self.items[i]
+            if self.exclude and it.get("biz") in self.exclude:
+                continue
             if diverse and seen[it.get("intent")] >= 3:
                 continue
             seen[it.get("intent")] += 1
@@ -65,6 +70,11 @@ class ExampleBank:
             if len(out) >= k:
                 break
         return out
+
+    @property
+    def has_shop_ids(self) -> bool:
+        """False for a bank built before shop ids were recorded: leave-one-business-out would then exclude nothing."""
+        return bool(self.items) and all("biz" in it for it in self.items)
 
     @classmethod
     def load(cls, path: str) -> "ExampleBank":

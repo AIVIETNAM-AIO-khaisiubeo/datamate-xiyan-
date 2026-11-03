@@ -268,16 +268,22 @@ datamate-xiyan-/
 ├── artifacts/                  # Vocab, example bank, reliability
 ├── tests/                      # Unit tests và mock-LLM integration test
 ├── docs/RESULTS.md             # Số liệu và phân tích thực nghiệm
+├── docs/GPU_FINETUNE_GUIDE.md  # Chạy G1–G4 với Qwen3-14B, hiệu chuẩn, fine-tune từng bước
 ├── submissions/                # File submission CPU hiện có
 ├── data/                       # train/ và public_test/ (đã kèm trong repo)
 ├── requirements.txt
 ├── requirements-train.txt
-├── Dockerfile
+├── Dockerfile                  # image với Qwen3-14B gốc (tải lúc build)
+├── Dockerfile.finetuned        # image với model đã fine-tune + merge (outputs/merged)
 └── predict.sh                  # Entry point của Docker
 ```
 
 
 ## 6. Huấn luyện và sử dụng LLM
+
+> **Hướng dẫn đầy đủ từng bước** (chạy G1–G4 với Qwen3-14B trên public test, hiệu chuẩn, ablation, fine-tune hai
+> pha có fold giữ riêng, Docker cho model đã fine-tune, kiểm tra luật): [`docs/GPU_FINETUNE_GUIDE.md`](docs/GPU_FINETUNE_GUIDE.md).
+> Mục này chỉ tóm tắt các lệnh.
 
 ### 6.1. Backbone và vai trò
 
@@ -305,10 +311,10 @@ Những bước này tạo hoặc cập nhật vocabulary, few-shot example bank
 python training/build_sft_data.py \
   --split data/train \
   --out outputs/sft.jsonl \
-  --n-aug 3
+  --n-aug 3 [--holdout-fold 0]
 ```
 
-Mỗi ví dụ huấn luyện được tạo từ frame G1 **đã khớp đáp án train**; mục tiêu SFT bao gồm **rewrite**, **JSON frame** và **answerability**. Dữ liệu train có thể được augment bằng các biến thể câu hỏi tiếng Việt.
+Mỗi ví dụ huấn luyện được tạo từ frame G1 **đã khớp đáp án train**; mục tiêu SFT gồm **rewrite** (G3) và **JSON frame** (G2). Prompt giống hệt prompt lúc suy luận: vocab của shop, rulebook, few-shot lấy từ bank nhưng loại chính shop đó. Mỗi câu còn được augment thành các biến thể tiếng Việt lộn xộn. `--holdout-fold K` bỏ các shop của fold K ra để đo fine-tune một cách trung thực (`datamate.predict --fold K`).
 
 ### 6.3b. Dữ liệu multi-task / multi-format cho SQL generator và selection model (XiYan §III-C/D)
 
@@ -338,22 +344,20 @@ python scripts/count_params.py /models/llm outputs/lora_cte outputs/lora_alias
 ```bash
 python -m pip install -r requirements-train.txt
 
+# một model cho mọi nhiệm vụ (G2, G3, G4, selection); --qlora cho GPU 24–48 GB, bỏ --qlora trên GPU 80 GB
 python training/sft_lora.py \
   --model /models/llm \
-  --data outputs/sft.jsonl \
-  --out outputs/lora_sft
+  --data outputs/sft.jsonl outputs/sql_sft/sql_sft.jsonl \
+  --out outputs/lora_all --qlora --epochs 1 --max-per-task 6000 --max-len 8192
 ```
 
-**Quan trọng:** script `training/sft_lora.py` hiện load backbone ở **BF16** và áp dụng **LoRA**; **chưa cài QLoRA 4-bit/NF4**. Vì vậy không nên mặc định script hiện tại chạy được trên GPU Colab 16–24 GB. Cần kiểm tra VRAM và khả năng tương thích phiên bản `transformers/trl/peft` khi train thực tế.
+`--qlora` nạp model gốc ở 4-bit NF4 (bitsandbytes), vừa với GPU 24–48 GB; không có `--qlora` thì LoRA chạy BF16 và cần khoảng 80 GB. `--max-len 8192` để prompt dài (schema, rulebook, few-shot) không bị cắt mất phần đáp án. Chưa có số liệu huấn luyện thật; kiểm tra phiên bản `transformers/trl/peft` khi chạy.
 
-Để gộp adapter vào backbone:
+Để gộp adapter vào backbone (model kết quả vẫn 14,8B tham số):
 
 ```bash
-python training/sft_lora.py \
-  --merge \
-  --model /models/llm \
-  --adapter outputs/lora_sft \
-  --out outputs/merged
+python training/sft_lora.py --merge --model /models/llm --adapter outputs/lora_all --out outputs/merged
+python scripts/count_params.py outputs/merged
 ```
 
 ### 6.5. GRPO với reward theo PA (thử nghiệm)
@@ -387,7 +391,21 @@ python -m datamate.predict \
   --model /models/llm
 ```
 
-Nếu model không load được, backend có cơ chế **fallback sang G1 rule-only**. Kiểm tra log trước khi diễn giải kết quả là của LLM. Mã inference **không tự nạp LoRA adapter riêng biệt** từ thư mục `outputs/lora_sft`; dùng model đã merge hoặc tích hợp adapter vào backend trước khi đánh giá.
+Nếu model không load được, backend có cơ chế **fallback sang G1 rule-only**. Kiểm tra log trước khi diễn giải kết quả là của LLM. Mã inference **không tự nạp LoRA adapter riêng biệt**; dùng model đã merge (`--model outputs/merged`).
+
+Tuỳ chọn khi chạy (cũng đặt được qua biến môi trường, xem `docs/GPU_FINETUNE_GUIDE.md` Phần G):
+
+| Tham số | Ý nghĩa |
+|---|---|
+| `--tp N` | số GPU (2 trên 2 × RTX 5090, 1 trên một GPU 80 GB) |
+| `--quant fp8` | cùng model, lượng tử hoá FP8, cho GPU 24–48 GB |
+| `--max-len`, `--gpu-util` | context và bộ nhớ vLLM |
+| `--generators g2,g3,g4` | bật hoặc tắt từng generator LLM (ablation); G1 luôn chạy |
+| `--g4-scope unresolved\|all` | G4 chỉ chạy câu chưa chắc (mặc định) hoặc mọi câu |
+| `--fold K` | chỉ chạy các shop của fold K (đánh giá trên shop mà model fine-tune chưa thấy) |
+| `--tau` | ngưỡng abstain |
+
+Trên split có `answers.jsonl` (train), agent tự loại few-shot của chính shop đang hỏi, để số đo và hiệu chuẩn không bị lộ đáp án.
 
 ## 7. Đánh giá và kiểm soát độ tin cậy
 
@@ -473,7 +491,8 @@ Chọn một trong ba cách:
 # (a) CPU, rule-only: nhanh (~1–5 phút), tất định — cách đã tạo bản nộp hiện tại
 python -m datamate.predict --data data/public_test --out runs/public/submission.jsonl --llm none
 
-# (b) GPU, đầy đủ G1–G4 + selection model (cần model local, ví dụ Qwen3-14B tại /models/llm)
+# (b) GPU, đầy đủ G1–G4 + selection model (cần model local, ví dụ Qwen3-14B tại /models/llm).
+#     Trước đó nên hiệu chuẩn G2–G4 trên train và chạy ablation: docs/GPU_FINETUNE_GUIDE.md, Phần D
 python -m datamate.predict --data data/public_test --out runs/public_llm/submission.jsonl --llm vllm --model /models/llm
 # tuỳ chọn: chạy G4 cho mọi câu thay vì chỉ câu chưa chắc
 export DATAMATE_G4_SCOPE=all
@@ -512,7 +531,7 @@ python -c "import json;a=[json.loads(l) for l in open('submissions/public_test_r
 1. **Generalization:** train đạt 1.000 nhưng đó là kết quả trong mẫu; public bản 1 đạt 0.561. Các cách diễn đạt mới, bảng có schema lạ và business chưa gặp vẫn là thách thức.
 2. **LLM chưa được benchmark:** G2/G3 và pipeline XiYan của G4 (keyword/chọn cột bằng LLM, sinh SQL, self-refine, selection model) mới chạy với mock LLM. Cần chạy inference thật với Qwen3-14B, rồi ablation trên validation theo business: `G1` → `+G2/G3` → `+G4 full schema` → `+S1/S2` → `+3 định dạng` → `+selection model`. Chỉ giữ thành phần nào làm PA tăng: thêm thành phần không tự động làm hệ thống chính xác hơn.
 3. **Đa dạng generator:** 3 định dạng SQL hiện là prompt của một model, nên chưa tương đương các generator fine-tune riêng của paper. Bước tiếp: train một model đa nhiệm, đa định dạng bằng `training/build_sql_sft.py` (vẫn 14,8B), rồi mới tính đến LoRA riêng cho từng định dạng nếu ngân sách tham số cho phép.
-4. **Training GPU còn thử nghiệm:** script SFT hiện là LoRA BF16, không phải QLoRA; GRPO chưa có số liệu xác nhận.
+4. **Training GPU còn thử nghiệm:** SFT (LoRA BF16 hoặc `--qlora`) và GRPO chưa được chạy thật, chưa có số liệu. Quy trình hai pha có fold giữ riêng nằm trong `docs/GPU_FINETUNE_GUIDE.md`, Phần F.
 5. **Calibration:** reliability của G4 và G_select hiện là giá trị mặc định (0,55–0,60). Cần hiệu chuẩn bằng `scripts/validate.py --write-reliability` trên log GPU của train. Hiệu chuẩn của G1 lấy từ train và có thể quá lạc quan.
 6. **Schema Filter không LLM** dùng TF-IDF + bảng thuật ngữ viết khi đọc train, nên với shop có cột lạ, recall có thể thấp hơn §4.2. Schema đầy đủ luôn được giữ làm baseline.
 7. **Rulebook drift và độ an toàn SQL:** thay đổi luật trong split khác có thể khiến engine không còn đúng. G4 chỉ chạy trên các view đã chuẩn hoá, DuckDB chỉ-đọc, có timeout cho mỗi truy vấn.
@@ -528,4 +547,4 @@ Repo này là một **ứng dụng điều chỉnh theo bài toán DataMate**, k
 
 ---
 
-**Documentation:** [Detailed results](docs/RESULTS.md) · [Training code](training/) · [Tests](tests/) · [Docker entry point](predict.sh)
+**Documentation:** [Detailed results](docs/RESULTS.md) · [GPU & fine-tune guide](docs/GPU_FINETUNE_GUIDE.md) · [Training code](training/) · [Tests](tests/) · [Docker entry point](predict.sh)

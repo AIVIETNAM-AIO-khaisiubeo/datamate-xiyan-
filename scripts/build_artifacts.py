@@ -58,7 +58,7 @@ def main(split):
                 if score_one(ans.to_submission(q["id"]), refs[q["id"]]) != 1:
                     continue
                 ivocab.setdefault(fr.intent, set()).update(t for t in masked.split() if t.isalpha() and t != "_e_")
-                item = {"q": q["question"], "nq": nq, "intent": fr.intent,
+                item = {"q": q["question"], "nq": nq, "intent": fr.intent, "biz": bid,
                         "frame_llm": json.dumps(frame_to_llm_json(fr, b), ensure_ascii=False),
                         "canon": render_frame(fr, b.product_name) or q["question"]}
                 fb.write(json.dumps(item, ensure_ascii=False) + "\n")
