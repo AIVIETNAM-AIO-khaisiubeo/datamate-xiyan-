@@ -94,9 +94,17 @@ else:
 
 md("## 3. Cài thư viện và tải Qwen3-14B")
 code("""
-# vLLM (suy luận) kéo theo PyTorch phù hợp; sau đó là thư viện huấn luyện. Mất khoảng 5 phút.
+# vLLM (suy luận) kéo theo PyTorch 2.7.1; sau đó là thư viện huấn luyện ĐÃ GHIM phiên bản (transformers 4.57.6,
+# trl 0.24.0, peft 0.17.1). Không dùng transformers 5.x / trl 1.x: chúng làm hỏng cả sft_lora.py lẫn vLLM 0.10.1.1.
+# Mất khoảng 5 phút. Pip có thể in cảnh báo xung đột với gói sẵn có của Colab: bỏ qua được.
 !pip install -q "vllm==0.10.1.1"
 !cd {REPO} && pip install -q -r requirements.txt -r requirements-train.txt
+!python -c "import torch, transformers, trl, peft, vllm; print('torch', torch.__version__, '| transformers', transformers.__version__, '| trl', trl.__version__, '| peft', peft.__version__, '| vllm', vllm.__version__)"
+""")
+md("""
+Dòng cuối phải in `transformers 4.57.6 | trl 0.24.0 | peft 0.17.1 | vllm 0.10.1.1`. Nếu phiên này đã từng cài phiên bản
+khác (ví dụ transformers 5.x), vào **Runtime → Restart session**, rồi chạy lại ô 1, ô GPU, ô mount Drive và tiếp tục từ
+ô tải model. Thư viện đã cài vẫn còn sau khi restart session.
 """)
 code("""
 from huggingface_hub import snapshot_download
@@ -125,10 +133,18 @@ Chạy lâu. Nếu bị ngắt kết nối, chạy lại các ô 1 → 4 (bướ
 từ checkpoint mới nhất trong `RUN` trên Drive. Khi xong, adapter bf16 nằm ở `RUN/adapter_bf16`.
 """)
 code("""
+# Kiểm tra nhanh (~1 phút) toàn bộ đường train bằng một model Qwen3 tí hon: lỗi phiên bản thư viện lộ ra ở đây,
+# trước khi nạp 30 GB trọng số. Phải in "SMOKE TEST OK".
+!cd {REPO} && python training/smoke_test.py --base {BASE} --data {DATA}/sft.jsonl {DATA}/sql_sft/sql_sft.jsonl
+""")
+code("""
 QL = "--qlora" if QLORA else ""
 !cd {REPO} && python training/sft_lora.py --model {BASE} --data {DATA}/sft.jsonl {DATA}/sql_sft/sql_sft.jsonl \\
     --out {RUN} {QL} --epochs {EPOCHS} --lr {LR} --max-per-task {MAX_PER_TASK} --max-len 8192 --resume
-!cd {REPO} && python scripts/count_params.py {BASE} {RUN}/adapter_bf16
+if os.path.exists(f"{RUN}/adapter_bf16/adapter_model.safetensors"):
+    !cd {REPO} && python scripts/count_params.py {BASE} {RUN}/adapter_bf16
+else:
+    print("Chưa có adapter: quá trình train ở trên chưa xong hoặc bị lỗi. Đọc thông báo lỗi phía trên.")
 """)
 
 md("""

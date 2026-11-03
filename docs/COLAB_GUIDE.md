@@ -45,7 +45,7 @@ Chạy các ô **theo thứ tự từ trên xuống**:
 | 2 | Kiểm tra GPU, mount Drive, clone repo | notebook tự chọn QLoRA (GPU < 70 GB) và FP8 cho vLLM (GPU < 45 GB) |
 | 3 | Cài vLLM + thư viện, tải Qwen3-14B | khoảng 10–20 phút |
 | 4 | Tạo dữ liệu từ **train** (pha A giữ riêng fold 0 = 6 shop) | khoảng 20–40 phút CPU; lưu trên Drive |
-| 5 | Train + xuất adapter bf16 | lâu nhất: khoảng 3–5 giờ trên A100 với 1500 ví dụ/nhiệm vụ (ước lượng, chưa đo) |
+| 5 | Smoke test 1 phút, rồi train + xuất adapter bf16 | lâu nhất: khoảng 3–5 giờ trên A100 với 1500 ví dụ/nhiệm vụ (ước lượng, chưa đo) |
 | 6 | **Restart session**, rồi đánh giá 3 cấu hình trên 6 shop giữ riêng, hiệu chuẩn | in `PA` của rule / base / lora |
 | 7 | Tạo `submission.jsonl` cho public test bằng model fine-tune | kiểm tra định dạng tự động |
 | 8 | Đẩy adapter, reliability, file nộp lên nhánh `colab-finetune-phasea` | token đọc từ Secrets, không in ra |
@@ -58,6 +58,11 @@ cho phiên dài hơn nhưng không vô hạn.
 
 **Compute units:** A100 tiêu nhiều unit mỗi giờ hơn L4. Xem số unit còn lại ở góc phải trên. Nếu ít unit, giảm
 `MAX_PER_TASK` (ví dụ 800) cho pha A.
+
+**Lỗi `unexpected keyword argument 'warmup_ratio'`** (hoặc cảnh báo `torch_dtype is deprecated`): phiên Colab đang có
+transformers 5.x. Kéo code mới (ô clone chạy `git pull`), chạy lại ô cài thư viện để có bản đã ghim (transformers
+4.57.6, trl 0.24.0, peft 0.17.1), **Runtime → Restart session**, chạy lại ô 1, ô GPU, ô Drive. Bỏ qua tải model nếu đã
+tải, rồi chạy ô smoke test trước khi train.
 
 ## 4. Đọc kết quả và quyết định
 

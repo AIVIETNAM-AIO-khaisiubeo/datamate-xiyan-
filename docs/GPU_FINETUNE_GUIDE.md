@@ -222,7 +222,8 @@ Quy trình hai pha giúp **đo được** fine-tune có lợi hay không, mà kh
 ### F0. Cài môi trường huấn luyện
 
 ```bash
-pip install -r requirements-train.txt       # torch, transformers, peft, trl, datasets, accelerate, bitsandbytes
+pip install "vllm==0.10.1.1"                # kéo theo torch 2.7.1
+pip install -r requirements-train.txt       # đã ghim: transformers 4.57.6, trl 0.24.0, peft 0.17.1, bitsandbytes
 export DATAMATE_CACHE=.cache
 ```
 
@@ -257,6 +258,8 @@ Với tiếng Việt có dấu, mỗi token khoảng 3 ký tự, nên `--max-len
 ### F3. Pha A — huấn luyện và merge
 
 ```bash
+# 1 phút: chạy thử toàn bộ đường train (model Qwen3 tí hon, tokenizer thật); phải in "SMOKE TEST OK"
+python training/smoke_test.py --base /models/qwen3-14b --data outputs/sft_f0.jsonl outputs/sql_sft_f0/sql_sft.jsonl
 # GPU 24–48 GB: --qlora ; GPU 80 GB: bỏ --qlora
 python training/sft_lora.py --model /models/qwen3-14b \
   --data outputs/sft_f0.jsonl outputs/sql_sft_f0/sql_sft.jsonl \
@@ -380,6 +383,7 @@ Nộp `result/submission.jsonl` lên leaderboard và nộp image theo hướng d
 | stderr in `-> rule-only mode` | Sai `--model`, thiếu GPU hoặc vLLM lỗi; xem dòng `[llm] failed to start …` |
 | `CUDA out of memory` khi suy luận | Giảm `--max-len` (12288 hoặc 8192), thêm `--quant fp8`, hoặc tăng `--tp` |
 | `CUDA out of memory` khi fine-tune | Thêm `--qlora`, giảm `--max-len` (6144), giữ `--batch 1` |
+| `SFTConfig.__init__() got an unexpected keyword argument 'warmup_ratio'`, hoặc cảnh báo `torch_dtype is deprecated` | Môi trường đang có transformers 5.x / TRL 1.x. Cài lại bản đã ghim: `pip install -r requirements-train.txt` (transformers 4.57.6, trl 0.24.0, peft 0.17.1, cài **sau** `vllm==0.10.1.1`), restart session, chạy `training/smoke_test.py` |
 | Log không có `G4_*` | G4 chỉ chạy cho câu chưa chắc; dùng `--g4-scope all` để thử, hoặc kiểm tra `--generators` |
 | PA train với LLM thấp hơn rule-only | Bình thường khi chưa hiệu chuẩn: chạy D4 (`--write-reliability`), hoặc tắt generator kém (D5) |
 | Docker build lỗi ở `COPY outputs/merged` | Chưa merge (F5), hoặc Docker không có BuildKit; bật bằng `DOCKER_BUILDKIT=1` |

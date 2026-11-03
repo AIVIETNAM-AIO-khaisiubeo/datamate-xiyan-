@@ -25,6 +25,7 @@ import argparse
 import collections
 import glob
 import json
+import math
 import os
 import random
 import shutil
@@ -66,6 +67,31 @@ def build_example(r: dict, tok) -> dict:
     return {"prompt": render_prompt(tok, r["system"], r["user"]), "completion": completion}
 
 
+def _version(v: str) -> tuple:
+    out = []
+    for p in v.split(".")[:2]:
+        digits = "".join(ch for ch in p if ch.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out)
+
+
+REQUIRED_SFT_ARGS = ("completion_only_loss", "max_length")
+
+
+def _sft_kwargs(cfg_cls, kw: dict) -> dict:
+    """Keep only the arguments this TRL version accepts; fail loudly if a required one is missing
+    (training on the prompt tokens, or with no length limit, would silently degrade the model)."""
+    import dataclasses
+    names = {f.name for f in dataclasses.fields(cfg_cls)}
+    missing = [k for k in REQUIRED_SFT_ARGS if k not in names]
+    if missing:
+        raise SystemExit(f"this TRL version has no {missing}: pip install -r requirements-train.txt (trl==0.24.0)")
+    dropped = sorted(k for k in kw if k not in names)
+    if dropped:
+        print("note: SFTConfig of this TRL version ignores", dropped)
+    return {k: v for k, v in kw.items() if k in names}
+
+
 def export_bf16(adapter_dir: str, out_dir: str) -> str:
     """bf16 copy of a PEFT adapter (QLoRA keeps LoRA weights in fp32: half the size, same quality)."""
     import torch
@@ -103,19 +129,29 @@ def main():
     a = ap.parse_args()
 
     import torch
+    import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    # transformers >= 4.56 renamed from_pretrained(torch_dtype=...) to dtype=...
+    dkey = "dtype" if _version(transformers.__version__) >= (4, 56) else "torch_dtype"
 
     if a.merge:
         from peft import PeftModel
-        base = AutoModelForCausalLM.from_pretrained(a.model, torch_dtype=torch.bfloat16, device_map="auto",
-                                                    low_cpu_mem_usage=True)          # BF16 base, also after QLoRA
+        base = AutoModelForCausalLM.from_pretrained(a.model, device_map="auto", low_cpu_mem_usage=True,
+                                                    **{dkey: torch.bfloat16})          # BF16 base, also after QLoRA
         m = PeftModel.from_pretrained(base, a.adapter).merge_and_unload()
         m.save_pretrained(a.out, safe_serialization=True, max_shard_size="5GB")
         AutoTokenizer.from_pretrained(a.model).save_pretrained(a.out)
         print("merged model ->", a.out)
         return
 
-    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+    import peft
+    import trl
+    print(f"versions: torch {torch.__version__}, transformers {transformers.__version__}, trl {trl.__version__}, "
+          f"peft {peft.__version__}  (tested: transformers 4.57.6, trl 0.24.0, peft 0.17.1)")
+    smoke = os.environ.get("DATAMATE_SFT_SMOKE") == "1"          # CPU smoke test of the code path only (tiny model)
+    gpu_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    if not gpu_ok and not smoke:
         raise SystemExit("needs a GPU with bf16 (A100 / L4 / RTX 30xx-50xx / H100); a T4 or V100 cannot train this model")
 
     from datasets import Dataset
@@ -126,22 +162,25 @@ def main():
     print("training examples per task:")
     rows = load_rows(a.data, a.max_per_task, a.seed)
     ds = Dataset.from_list([build_example(r, tok) for r in rows])
-    kw = dict(torch_dtype=torch.bfloat16, attn_implementation="sdpa")
-    if a.qlora:
+    kw = {dkey: torch.bfloat16 if gpu_ok else torch.float32, "attn_implementation": "sdpa"}
+    if a.qlora and gpu_ok:
         from transformers import BitsAndBytesConfig
         kw["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                                        bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
         kw["device_map"] = {"": 0}
     model = AutoModelForCausalLM.from_pretrained(a.model, **kw)
-    if a.qlora:
+    if a.qlora and gpu_ok:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     peft_cfg = LoraConfig(r=a.rank, lora_alpha=2 * a.rank, lora_dropout=0.05, task_type="CAUSAL_LM",
                           target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
-    cfg = SFTConfig(output_dir=a.out, num_train_epochs=a.epochs, learning_rate=a.lr, per_device_train_batch_size=a.batch,
-                    gradient_accumulation_steps=a.grad_accum, bf16=True, logging_steps=10, save_strategy="steps",
-                    save_steps=a.save_steps, save_total_limit=2, max_length=a.max_len, completion_only_loss=True,
-                    lr_scheduler_type="cosine", warmup_ratio=0.03, gradient_checkpointing=True, seed=a.seed,
-                    report_to="none")
+    # 3 % warm-up as an explicit step count: 'warmup_ratio' no longer exists in transformers 5 / TRL 1.x
+    steps = max(1, math.ceil(len(ds) / (a.batch * a.grad_accum)) * max(1, math.ceil(a.epochs)))
+    cfg = SFTConfig(**_sft_kwargs(SFTConfig, dict(
+        output_dir=a.out, num_train_epochs=a.epochs, learning_rate=a.lr, per_device_train_batch_size=a.batch,
+        gradient_accumulation_steps=a.grad_accum, bf16=gpu_ok, logging_steps=10, save_strategy="steps",
+        save_steps=a.save_steps, save_total_limit=2, max_length=a.max_len, completion_only_loss=True,
+        lr_scheduler_type="cosine", warmup_steps=max(1, int(0.03 * steps)), gradient_checkpointing=gpu_ok,
+        seed=a.seed, report_to="none")))
     tr = SFTTrainer(model=model, args=cfg, train_dataset=ds, processing_class=tok, peft_config=peft_cfg)
     resume = a.resume and bool(glob.glob(os.path.join(a.out, "checkpoint-*")))
     if a.resume and not resume:

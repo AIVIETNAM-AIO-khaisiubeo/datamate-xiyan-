@@ -38,3 +38,29 @@ def test_cli_lora_option():
     import argparse
     src = open(pr.__file__, encoding="utf-8").read()
     assert '"--lora"' in src and 'cfg["llm"]["lora_path"]' in src
+
+
+def test_sft_config_filtering_and_versions():
+    import dataclasses
+    import pytest
+    from training.sft_lora import _sft_kwargs, _version
+    assert _version("4.57.6") == (4, 57) and _version("5.0.0rc1") == (5, 0) and _version("4.56.0.dev0") == (4, 56)
+
+    @dataclasses.dataclass
+    class NewCfg:                       # like TRL 1.x: no warmup_ratio
+        output_dir: str = ""
+        max_length: int = 0
+        completion_only_loss: bool = True
+        warmup_steps: int = 0
+
+    kw = _sft_kwargs(NewCfg, {"output_dir": "x", "max_length": 8, "completion_only_loss": True, "warmup_steps": 3,
+                              "warmup_ratio": 0.03})
+    assert "warmup_ratio" not in kw and kw["warmup_steps"] == 3
+
+    @dataclasses.dataclass
+    class OldCfg:                       # a TRL too old for completion-only loss: must refuse, not train on prompts
+        output_dir: str = ""
+        max_length: int = 0
+
+    with pytest.raises(SystemExit):
+        _sft_kwargs(OldCfg, {"output_dir": "x", "max_length": 8, "completion_only_loss": True})
