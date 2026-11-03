@@ -87,6 +87,48 @@ def evaluate(recs, rel, tau):
     return out
 
 
+def generator_report(recs):
+    """Per generator: how often it answers, how often it is right, and how it does where G1 has no answer.
+    On train G1 is in-sample (rules written while reading train), so the end-to-end PA hides the LLMs: these
+    numbers are what separates a base model from a fine-tuned one."""
+    rows = {}
+    for r in recs:
+        g1 = next((c for c in r["cands"] if c.gen == "G1_rule" and c.answer.type != "abstain"), None)
+        g1_ok = g1 is not None and not (g1.answer.meta.get("oov") or g1.answer.meta.get("conflict"))
+        g1_key = g1.answer.key() if g1 is not None else None
+        seen = set()
+        for c in r["cands"]:
+            if c.answer.type == "abstain" or c.gen in seen:
+                continue
+            seen.add(c.gen)
+            d = rows.setdefault(c.gen, collections.Counter())
+            ok = score_one(c.answer.to_submission(r["id"]), r["ref"]) == 1
+            d["n"] += 1
+            d["ok"] += ok
+            if c.gen != "G1_rule":
+                if g1 is not None:
+                    d["with_g1"] += 1
+                    d["agree_g1"] += c.answer.key() == g1_key
+                if not g1_ok:
+                    d["solo"] += 1
+                    d["solo_ok"] += ok
+    return rows, len(recs)
+
+
+def print_generator_report(recs):
+    rows, n = generator_report(recs)
+    print("  per generator (each candidate scored against the train answer):")
+    print(f"    {'generator':12s} {'answers':>8s} {'coverage':>9s} {'precision':>10s} {'agree G1':>9s} "
+          f"{'G1 silent: n':>13s} {'precision':>10s}")
+    for g in sorted(rows, key=lambda x: (x != "G1_rule", x)):
+        d = rows[g]
+        agree = f"{d['agree_g1'] / d['with_g1']:.3f}" if d["with_g1"] else "-"
+        solo = f"{d['solo_ok'] / d['solo']:.3f}" if d["solo"] else "-"
+        print(f"    {g:12s} {d['n']:8d} {d['n'] / max(1, n):9.3f} {d['ok'] / max(1, d['n']):10.3f} {agree:>9s} "
+              f"{d['solo']:13d} {solo:>10s}")
+    return {g: dict(d) for g, d in rows.items()}
+
+
 def metrics(rows, bins=10):
     n = len(rows)
     ans = [r for r in rows if r["answered"]]
@@ -115,6 +157,8 @@ def main():
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--out", default=os.path.join(ROOT, "runs", "validate"))
     ap.add_argument("--write-reliability", default=None)
+    ap.add_argument("--base-reliability", default=os.path.join(ROOT, "artifacts", "reliability.json"),
+                    help="when --write-reliability does not exist yet, start from this file (keeps G1's calibration)")
     ap.add_argument("--include-g1", action="store_true",
                     help="also overwrite G1_rule reliabilities (default: only the LLM generators are written)")
     a = ap.parse_args()
@@ -142,6 +186,17 @@ def main():
             rr += evaluate([r for r in recs if fold_of[r["biz"]] == f], rel, t)
         mm = metrics(rr)
         print(f"    tau={t:.2f}  PA={mm['PA']:.4f}  coverage={mm['coverage']:.3f}  precision={mm['precision']:.4f}")
+    m["generators"] = print_generator_report(recs)
+    llm = [dict(r, cands=[c for c in r["cands"] if c.gen != "G1_rule"]) for r in recs]
+    if any(r["cands"] for r in llm):
+        lrows = []
+        for f in range(a.folds):
+            rel = fit([r for r in llm if fold_of[r["biz"]] != f])
+            lrows += evaluate([r for r in llm if fold_of[r["biz"]] == f], rel, a.tau)
+        lm = metrics(lrows)
+        m["llm_only"] = {k: lm[k] for k in ("PA", "coverage", "precision")}
+        print(f"  LLM generators only (G1 removed): PA={lm['PA']:.4f}  coverage={lm['coverage']:.3f}  "
+              f"precision={lm['precision']:.4f}   <- compare this between base and fine-tuned runs")
     with open(os.path.join(a.out, "errors.jsonl"), "w", encoding="utf-8") as fo:
         for r in rows:
             if r["answered"] and r["score"] == -1:
@@ -152,13 +207,15 @@ def main():
         rel = fit(recs)
         if not a.include_g1:
             rel.pop("G1_rule", None)
+        src = a.write_reliability if os.path.exists(a.write_reliability) else a.base_reliability
         try:
-            cur = json.load(open(a.write_reliability, encoding="utf-8"))
+            cur = json.load(open(src, encoding="utf-8"))
         except Exception:  # noqa: BLE001
             cur = {}
         cur.update(rel)
         json.dump(cur, open(a.write_reliability, "w", encoding="utf-8"), ensure_ascii=False, indent=1, sort_keys=True)
-        print(f"  reliabilities of {sorted(rel)} -> {a.write_reliability}")
+        print(f"  reliabilities of {sorted(rel)} merged into {src} -> {a.write_reliability} "
+              f"(kept: {sorted(k for k in cur if k not in rel)})")
 
 
 if __name__ == "__main__":

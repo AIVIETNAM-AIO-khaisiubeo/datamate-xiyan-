@@ -290,16 +290,35 @@ Mỗi lệnh in `PA=...`. So sánh thêm bằng `validate.py`:
 python scripts/validate.py runs/f0_ft/logs data/train/answers.jsonl --folds 3
 ```
 
+**Lưu ý: PA cả hệ thống trên câu train gốc gần như luôn là 1,0.** Luật G1 được viết khi đọc train, nên trên các câu
+này G1 đúng gần hết, và rule-only, model gốc, model fine-tune đều cho PA 1,0 (đã thấy trên Colab). Vì vậy:
+
+- Chạy trên **bản nhiễu** của fold giữ riêng. Câu hỏi train gốc được thêm lỗi gõ, viết tắt, bỏ dấu; đáp án và dữ liệu
+  giữ nguyên. Không cần `--fold` vì bản nhiễu chỉ chứa 6 shop đó:
+
+  ```bash
+  python scripts/make_noisy_split.py data/train runs/noisy_f0 --fold 0
+  DATAMATE_G4_SCOPE=all DATAMATE_G4_MAX=1000 python -m datamate.predict --data runs/noisy_f0 \
+    --llm vllm --model /models/qwen3-14b --lora outputs/lora_f0 --out runs/noisy_f0_ft/submission.jsonl
+  ```
+
+- Đọc dòng `LLM generators only (G1 removed)` và bảng `per generator` của `validate.py`. Đó là PA, độ phủ và độ chính
+  xác của G2–G4 khi bỏ G1, và là chỉ số dùng để so model gốc với model fine-tune.
+
 **Quyết định:**
-- Model fine-tune có PA cao hơn model gốc **và** cao hơn rule-only trên fold 0 → làm tiếp F5.
-- Không cao hơn → không dùng fine-tune. Thử chỉnh: ít epoch hơn, `lr` nhỏ hơn, bỏ bớt nhiệm vụ (ví dụ chỉ `rewrite`
+- `LLM-only PA` của model fine-tune cao hơn model gốc, **và** PA cả hệ thống trên bản nhiễu không thấp hơn rule-only
+  (tức LLM không làm hỏng câu G1 đã đúng) → làm tiếp F5.
+- Không thoả → không dùng fine-tune. Thử chỉnh: ít epoch hơn, `lr` nhỏ hơn, bỏ bớt nhiệm vụ (ví dụ chỉ `rewrite`
   và `frame`), rồi lặp lại F2–F4.
 
 Sau đó hiệu chuẩn độ tin cậy của các generator LLM. Đây là số đo trung thực, vì model chưa từng thấy 6 shop này:
 
 ```bash
-python scripts/validate.py runs/f0_ft/logs data/train/answers.jsonl --folds 3 --write-reliability artifacts/reliability.json
+python scripts/validate.py runs/noisy_f0_ft/logs runs/noisy_f0/answers.jsonl --folds 3 --write-reliability artifacts/reliability.json
 ```
+
+`--write-reliability` chỉ thay phần của G2–G4 / G_select. Nếu file đích chưa có, nó bắt đầu từ
+`artifacts/reliability.json` của repo (`--base-reliability`), nên độ tin cậy của G1 luôn được giữ.
 
 ### F5. Pha B — model cuối trên cả 30 shop
 
@@ -340,7 +359,11 @@ python scripts/check_submission.py runs/public_ft/submission.jsonl data/public_t
 3. **Đọc log lỗi:** `runs/validate/errors.jsonl` liệt kê câu sai, generator, intent và p. Câu sai lặp lại theo một
    kiểu thường là do thiếu dữ liệu huấn luyện kiểu đó, hoặc một luật sai trong G1.
 4. **Thời gian:** đo thời gian chạy public trên đúng phần cứng chấm. Private có thể nhiều câu hơn; nếu sát 6 giờ thì
-   giữ `--g4-scope unresolved` và giảm `g4_max_per_biz` trong `datamate/agent.py`.
+   giữ `--g4-scope unresolved` và giảm số câu G4 mỗi shop (`DATAMATE_G4_MAX`, mặc định 60).
+5. **So với rule-only trên public (không cần nhãn):** `python scripts/compare_submissions.py
+   submissions/public_test_rule_only.jsonl runs/public_ft/submission.jsonl --logs runs/public_ft/logs`. Lệnh này cho
+   biết bao nhiêu câu mới được trả lời, bao nhiêu câu đổi đáp án, và do generator nào. Chỉ leaderboard mới chấm được
+   các câu đó.
 
 ## Phần G — Đóng gói Docker và nộp
 

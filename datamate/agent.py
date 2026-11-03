@@ -54,7 +54,7 @@ def default_config() -> dict:
         "use_g2": "g2" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
         "use_g3": "g3" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
         "use_g4": "g4" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
-        "g4_max_per_biz": 60,
+        "g4_max_per_biz": int(os.environ.get("DATAMATE_G4_MAX", "60")),
         # XiYan pipeline for G4: filtered schemas (S1, S2) + full-schema baseline, SQL formats, selection model
         "g4_schemas": ["S1", "S2", "full"],
         "g4_scope": os.environ.get("DATAMATE_G4_SCOPE", "unresolved"),     # 'unresolved' | 'all'

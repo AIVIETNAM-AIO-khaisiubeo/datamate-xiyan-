@@ -42,13 +42,13 @@ Chạy các ô **theo thứ tự từ trên xuống**:
 | Ô | Việc | Ghi chú |
 |---|---|---|
 | 1 | Cấu hình | `PHASE="A"` lần đầu; `MAX_PER_TASK=1500` để thử nhanh |
-| 2 | Kiểm tra GPU, mount Drive, clone repo | notebook tự chọn QLoRA (GPU < 70 GB) và FP8 cho vLLM (GPU < 45 GB) |
+| 2 | Kiểm tra GPU, mount Drive, **cài git-lfs**, clone hoặc cập nhật repo | notebook tự chọn QLoRA (GPU < 70 GB) và FP8 cho vLLM (GPU < 45 GB) |
 | 3 | Cài vLLM + thư viện, tải Qwen3-14B | khoảng 10–20 phút |
 | 4 | Tạo dữ liệu từ **train** (pha A giữ riêng fold 0 = 6 shop) | khoảng 20–40 phút CPU; lưu trên Drive |
-| 5 | Smoke test 1 phút, rồi train + xuất adapter bf16 | lâu nhất: khoảng 3–5 giờ trên A100 với 1500 ví dụ/nhiệm vụ (ước lượng, chưa đo) |
-| 6 | **Restart session**, rồi đánh giá 3 cấu hình trên 6 shop giữ riêng, hiệu chuẩn | in `PA` của rule / base / lora |
-| 7 | Tạo `submission.jsonl` cho public test bằng model fine-tune | kiểm tra định dạng tự động |
-| 8 | Đẩy adapter, reliability, file nộp lên nhánh `colab-finetune-phasea` | token đọc từ Secrets, không in ra |
+| 5 | Smoke test 1 phút, rồi train + xuất adapter bf16 | lâu nhất: khoảng 5 giờ trên A100 với 1500 ví dụ/nhiệm vụ (đã đo: 822 bước) |
+| 6 | **Restart session**, rồi đánh giá rule / base / lora trên **bản nhiễu** của 6 shop giữ riêng, hiệu chuẩn | in bảng PA cả hệ thống và PA LLM-only; khoảng 1–2 giờ |
+| 7 | Tạo `submission.jsonl` cho public test bằng model fine-tune, rồi so với bản rule-only | tự tạo lại khi reliability đổi; kiểm tra định dạng tự động |
+| 8 | Đẩy adapter, reliability, file nộp lên nhánh `colab-finetune-phasea` | kiểm tra adapter đi qua LFS trước khi đẩy, kiểm tra nhánh đã có trên GitHub sau khi đẩy; in `XONG: <link>` |
 | 9 | (Tuỳ chọn) Merge và publish lên Hugging Face Hub | cần `HF_TOKEN`, khoảng 60 GB đĩa |
 
 **Khi bị ngắt kết nối** (thường gặp với job dài): máy ảo mới không còn thư viện và model, nhưng Drive vẫn giữ checkpoint
@@ -68,16 +68,35 @@ transformers 5.x. Kéo code mới (ô clone chạy `git pull`), chạy lại ô 
 4.57.6, trl 0.24.0, peft 0.17.1), **Runtime → Restart session**, chạy lại ô 1, ô GPU, ô Drive. Bỏ qua tải model nếu đã
 tải, rồi chạy ô smoke test trước khi train.
 
+**Lỗi khi đẩy: `git: 'lfs' is not a git command`, rồi `GH001: Large files detected ... exceeds GitHub's file size
+limit of 100.00 MB`**: máy Colab không có sẵn git-lfs. Adapter 245 MB bị commit như file thường, và GitHub từ chối cả
+lần đẩy, nên trên GitHub không thấy gì. Notebook mới cài git-lfs ở ô clone, và ô 8 dừng lại kèm thông báo nếu adapter
+chưa đi qua LFS. Xem mục 6 để làm lại mà không phải train lại.
+
 ## 4. Đọc kết quả và quyết định
 
-Ô 6 in ra ba dòng, ví dụ `rule PA = …`, `base PA = …`, `lora PA = …`, tính trên 553 câu của 6 shop mà model chưa từng
-thấy.
+**Vì sao không dùng PA trên câu train gốc:** luật G1 được viết khi đọc train, nên trên 553 câu gốc của fold giữ riêng
+cả ba cấu hình đều cho `PA = 1.0000`. Con số đó không cho biết fine-tune có giúp gì không. Ô 6 in một bảng khác:
 
-- `lora` **cao hơn cả** `base` và `rule`: fine-tune có lợi. Có thể nộp file ở ô 7, rồi làm **pha B**: đặt `PHASE="B"`
-  (và `MAX_PER_TASK` lớn hơn nếu đủ unit), chạy lại notebook để có adapter học trên cả 30 shop. Pha B bỏ qua bước
-  đánh giá và giữ `reliability_phaseA.json`.
-- Không cao hơn: **đừng dùng adapter**. Thử `LR = 5e-5`, đổi `MAX_PER_TASK`, xoá thư mục `lora_phaseA` trên Drive rồi
-  train lại.
+| Cột | Nghĩa | Dùng để |
+|---|---|---|
+| `PA bản nhiễu` | PA cả hệ thống trên cùng các câu hỏi đó, thêm lỗi gõ, viết tắt, bỏ dấu (đáp án không đổi) | kiểm tra LLM không làm hỏng câu G1 đã đúng; rule-only ở đây khoảng 0,985 |
+| `LLM-only PA`, `coverage`, `precision` | chấm riêng G2, G3, G4, G_select khi bỏ G1 | **so `base` với `lora`** |
+
+Bảng `per generator` còn cho biết, với từng generator, độ chính xác trên các câu mà G1 không trả lời được (cột
+`G1 silent`). Đó là chỗ LLM có thể thêm điểm trên public.
+
+- `lora >= rule` trên bản nhiễu **và** `LLM-only: lora > base`: fine-tune có lợi. Nộp file ở ô 7. Có thể làm **pha B**:
+  đặt `PHASE="B"` (và `MAX_PER_TASK` lớn hơn nếu đủ unit), chạy lại notebook để có adapter học trên cả 30 shop. Pha B
+  bỏ qua bước đánh giá và giữ `reliability_phaseA.json`.
+- `LLM-only: lora > base` sai: **đừng dùng adapter**. Thử `LR = 5e-5`, đổi `MAX_PER_TASK`, xoá thư mục `lora_phaseA`
+  trên Drive rồi train lại.
+- `lora >= rule` sai: LLM đang làm hỏng một vài câu. Xem `eval_phaseA/validate_lora/errors.jsonl` trên Drive.
+
+Bản nhiễu vẫn làm từ train, nên nó chỉ là ước lượng. **Điểm thật duy nhất trên public là leaderboard.** Ô 7 có in phần
+so với bản rule-only (PA public 0,561): bao nhiêu câu mới được trả lời, bao nhiêu câu đổi đáp án, do generator nào. Mỗi
+câu như vậy được +1 nếu đúng và −1 nếu sai. Không sửa luật hay prompt theo từng câu public: như thế là quá khớp với
+public, và private sẽ khác.
 
 ## 5. Sau khi notebook đẩy lên GitHub
 
@@ -98,7 +117,24 @@ thấy.
    docker build -f Dockerfile.lora -t datamate-xiyan:lora .        # image nộp: base tải lúc build + adapter
    ```
 
-## 6. Lưu ý về luật và chi phí
+## 6. Đã train xong nhưng GitHub không thấy gì: làm lại thế nào (không cần train lại)
+
+Adapter, dữ liệu và log đánh giá đều nằm trên Drive (`MyDrive/datamate`), nên không phải train lại.
+
+1. Mở lại notebook từ link ở đầu trang, để có bản mới nhất. Bản cũ đã lưu trong Drive của bạn vẫn là bản cũ.
+2. Chạy ô 1, các ô của mục 2 (ô clone giờ cài git-lfs, rồi đặt repo về đúng `origin/gpu-finetune-guide`; commit hỏng
+   của lần trước bị bỏ), và mục 3. Ô tải model tự bỏ qua nếu model còn trên máy.
+3. **Bỏ qua mục 4 và 5**: dữ liệu và adapter đã có trên Drive.
+4. Chạy mục 6. Bản nhiễu được tạo mới, và rule / base / lora được chạy lại với G4 trên mọi câu. Các lần chạy cũ trên câu
+   gốc vẫn được giữ; ô tuỳ chọn cuối mục 6 chấm lại chúng mà không tốn GPU. `reliability_phaseA.json` cũ (thiếu
+   `G1_rule`) bị xoá và tạo lại.
+5. Chạy mục 7. File nộp cũ được tạo với reliability thiếu G1, nên nó được chuyển sang `public_phaseA_prev` và file mới
+   được tạo lại.
+6. Chạy mục 8. Ô phải in `đã kiểm tra: ... adapter đi qua Git LFS`, rồi `Uploading LFS objects: 100% (1/1), ...` (khoảng 250 MB), và
+   cuối cùng là `XONG: https://github.com/.../tree/colab-finetune-phasea`. Nếu không thấy dòng `XONG`, ô đã dừng
+   ở một bước kèm thông báo lỗi.
+
+## 7. Lưu ý về luật và chi phí
 
 - **Chỉ dữ liệu train** được dùng để fine-tune và hiệu chuẩn; notebook không đọc nhãn public (public không có nhãn),
   và không đưa câu hỏi public vào dữ liệu train.

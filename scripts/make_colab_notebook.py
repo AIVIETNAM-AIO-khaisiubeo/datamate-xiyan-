@@ -23,8 +23,9 @@ Notebook chạy toàn bộ quy trình trong `docs/GPU_FINETUNE_GUIDE.md` trên C
 1. **Cài đặt**: kiểm tra GPU, nối Google Drive, clone repo, cài thư viện, tải Qwen3-14B.
 2. **Dữ liệu**: tạo dữ liệu fine-tune từ **train** (không bao giờ dùng public test).
 3. **Huấn luyện**: QLoRA hoặc LoRA. Checkpoint lưu trên Drive, mất kết nối thì chạy lại để train tiếp.
-4. **Đánh giá** (pha A): so rule-only, model gốc và model fine-tune trên 6 shop giữ riêng, rồi hiệu chuẩn độ tin cậy.
-5. **Tạo `submission.jsonl`** cho public test bằng model đã fine-tune.
+4. **Đánh giá** (pha A): so rule-only, model gốc và model fine-tune trên bản nhiễu của 6 shop giữ riêng (PA cả hệ
+   thống, và PA của riêng các generator LLM), rồi hiệu chuẩn độ tin cậy.
+5. **Tạo `submission.jsonl`** cho public test bằng model đã fine-tune, rồi so với bản rule-only (không cần nhãn).
 6. **Lưu về GitHub**: adapter (Git LFS, khoảng 0,26 GB), reliability, file nộp, ghi chú huấn luyện, đẩy lên một nhánh mới.
 
 **Cần chuẩn bị**
@@ -36,8 +37,8 @@ Notebook chạy toàn bộ quy trình trong `docs/GPU_FINETUNE_GUIDE.md` trên C
   - **Không dán token vào ô code.**
 
 **Thời gian và compute units** (ước lượng, chưa đo): tải model 5–15 phút; tạo dữ liệu 20–40 phút (CPU); train pha A
-với `MAX_PER_TASK=1500` khoảng 3–5 giờ trên A100, lâu hơn khoảng 3 lần trên L4; đánh giá 3 cấu hình trên fold 0
-khoảng 1 giờ. Theo dõi compute units ở góc phải trên.
+với `MAX_PER_TASK=1500` khoảng 5 giờ trên A100 (đã đo: 822 bước), lâu hơn khoảng 3 lần trên L4; đánh giá trên fold 0
+khoảng 1–2 giờ. Theo dõi compute units ở góc phải trên.
 
 Khi bị ngắt kết nối, máy ảo mới không còn thư viện và model, còn Drive vẫn giữ checkpoint và dữ liệu. Chạy lại
 từ ô **1** theo thứ tự: các bước đã xong sẽ được bỏ qua, và việc train tự tiếp tục từ checkpoint cuối.
@@ -88,10 +89,15 @@ drive.mount("/content/drive")
 os.makedirs(WORK, exist_ok=True)
 """)
 code("""
+# Colab KHÔNG có sẵn git-lfs. Thiếu nó, adapter 0,26 GB bị commit như file thường và GitHub từ chối (giới hạn 100 MB).
+!command -v git-lfs >/dev/null || (apt-get -qq update && apt-get -qq install -y git-lfs >/dev/null)
+!git lfs version
 if not os.path.isdir(REPO):
     !git clone --branch {BRANCH} {REPO_URL} {REPO}
 else:
-    !cd {REPO} && git pull --ff-only
+    # lấy đúng bản mới nhất của BRANCH, kể cả khi lần trước ô 8 đã tạo commit cục bộ trên nhánh khác
+    # (-f: bỏ thay đổi cục bộ trên file của repo; mọi kết quả nằm trên Drive)
+    !cd {REPO} && git fetch -q origin && git checkout -q -f -B {BRANCH} origin/{BRANCH}
 !cd {REPO} && git lfs install --local && git log --oneline -1
 """)
 
@@ -154,48 +160,141 @@ else:
 md("""
 ## 6. Đánh giá trên 6 shop giữ riêng (pha A)
 
-**Trước tiên: Runtime → Restart session** để giải phóng GPU sau khi train. Sau đó chạy lại ô 1, ô mount Drive, rồi
-chạy tiếp từ đây (thư viện và model vẫn còn trong phiên).
+**Trước tiên: Runtime → Restart session** để giải phóng GPU sau khi train. Sau đó chạy lại ô 1 và các ô của mục 2
+(GPU, Drive, repo), rồi chạy tiếp từ đây. Thư viện và model vẫn còn trong phiên.
 
-Ba cấu hình được chạy trên cùng 6 shop mà model chưa từng thấy: G1 rule-only, Qwen3-14B gốc, và Qwen3-14B + adapter.
+**Vì sao không so PA trên câu hỏi train gốc?** Luật của G1 được viết trong lúc đọc train, nên trên câu hỏi train G1
+trả lời đúng gần hết. Lần chạy trước cho `rule = base = lora = 1.0000`, và con số đó không phân biệt được ba cấu hình.
+Mục này đo hai thứ:
+
+1. **PA trên bản nhiễu** của 6 shop giữ riêng (`scripts/make_noisy_split.py`). Vẫn là các câu hỏi train gốc, chỉ thêm
+   bỏ dấu, gõ Telex sai, viết tắt; dữ liệu và đáp án giữ nguyên. Con số này kiểm tra rằng thêm LLM **không làm hỏng**
+   các câu G1 đã đúng. G1 vẫn mạnh ở đây (khoảng 0,98), nên chênh lệch giữa các cấu hình sẽ nhỏ.
+2. **LLM-only**: chấm riêng G2, G3, G4, G_select (bỏ G1 ra). Đây là **chỉ số chính để so `base` với `lora`**, tức xem
+   fine-tune có làm các generator LLM tốt hơn không.
+
+G4 (XiYan SQL) được chạy trên **mọi** câu (`DATAMATE_G4_SCOPE=all`). Lần trước nó chỉ chạy khi G1 không trả lời được,
+nên không có số đo nào cho G4. Thời gian (ước lượng, chưa đo): khoảng 1–2 giờ cho cả hai cấu hình LLM trên A100.
 """)
 code("""
-import re, glob
+import re, json, shutil
 os.makedirs(EVAL, exist_ok=True)
-def run(tag, extra):
-    out = f"{EVAL}/{tag}/submission.jsonl"
-    if not os.path.exists(out):
-        r = subprocess.run(f"cd {REPO} && python -m datamate.predict --data data/train --fold {HOLDOUT_FOLD} {extra} --out {out}",
-                           shell=True, capture_output=True, text=True)
-        open(f"{EVAL}/{tag}.log", "w").write(r.stderr)
-    pa = re.findall(r"PA=([-0-9.]+)", open(f"{EVAL}/{tag}.log").read())
-    print(f"{tag:10s} PA = {pa[-1] if pa else '?'}")
+NOISY = f"/content/noisy_fold{HOLDOUT_FOLD}"   # đĩa máy Colab (Drive không tạo được symlink); seed cố định nên tạo lại y hệt
+if not os.path.exists(f"{NOISY}/questions.jsonl"):
+    !cd {REPO} && python scripts/make_noisy_split.py data/train {NOISY} --fold {HOLDOUT_FOLD}
+LLM_EVAL = "DATAMATE_G4_SCOPE=all DATAMATE_G4_MAX=1000"
+def run(tag, extra, env=""):
+    d = f"{EVAL}/{tag}"
+    cmd = f"cd {REPO} && {env} python -m datamate.predict --data {NOISY} {extra} --out {d}/submission.jsonl"
+    done = f"{d}/cmd.txt"                      # chạy lại khi lệnh thay đổi; bỏ qua nếu đã chạy xong đúng lệnh này
+    if not (os.path.exists(done) and open(done).read() == cmd):
+        shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+        print("đang chạy", tag, "...")
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        open(f"{d}/predict.log", "w").write(r.stderr)
+        if r.returncode != 0:
+            print(r.stderr[-3000:]); raise RuntimeError(f"{tag}: predict lỗi, xem log ở trên")
+        open(done, "w").write(cmd)
+    m = re.findall(r"PA=([-0-9.]+) (.*)", open(f"{d}/predict.log").read())
+    print(f"{tag:12s} PA = {m[-1][0]}  {m[-1][1]}" if m else f"{tag}: không thấy PA trong log")
 if PHASE == "A":
-    run("rule", "--llm none")
-    run("base", f"--llm vllm --model {BASE} {VLLM_FLAGS}")
-    run("lora", f"--llm vllm --model {BASE} --lora {RUN}/adapter_bf16 {VLLM_FLAGS}")
+    run("noisy_rule", "--llm none")
+    run("noisy_base", f"--llm vllm --model {BASE} {VLLM_FLAGS}", LLM_EVAL)
+    run("noisy_lora", f"--llm vllm --model {BASE} --lora {RUN}/adapter_bf16 {VLLM_FLAGS}", LLM_EVAL)
 """)
 code("""
-# Hiệu chuẩn độ tin cậy của các generator LLM trên shop chưa thấy (chỉ dùng nhãn train). Chỉ ghi G2-G4 / G_select.
+# Chấm từng generator, và hiệu chuẩn độ tin cậy G2-G4 / G_select trên shop chưa thấy (chỉ dùng nhãn train).
+# reliability_phaseA.json = reliability gốc của repo (giữ G1_rule) + phần LLM vừa đo. Lần chạy trước ghi đè mất G1_rule,
+# nên file cũ bị xoá và tạo lại.
+REL = f"{WORK}/reliability_phaseA.json"
 if PHASE == "A":
-    !cd {REPO} && python scripts/validate.py {EVAL}/lora/logs data/train/answers.jsonl --folds 3 \\
-        --out {EVAL}/validate --write-reliability {WORK}/reliability_phaseA.json
+    !cd {REPO} && git checkout -- artifacts/reliability.json
+    if os.path.exists(REL):
+        os.remove(REL)
+    print("===== base")
+    !cd {REPO} && python scripts/validate.py {EVAL}/noisy_base/logs {NOISY}/answers.jsonl --folds 3 --out {EVAL}/validate_base | grep -A12 "per generator"
+    print("===== lora")
+    !cd {REPO} && python scripts/validate.py {EVAL}/noisy_lora/logs {NOISY}/answers.jsonl --folds 3 --out {EVAL}/validate_lora --write-reliability {REL} | grep -A14 "per generator"
+    rel = json.load(open(REL, encoding="utf-8"))
+    assert "G1_rule" in rel, "reliability_phaseA.json thiếu G1_rule"
+    print("reliability_phaseA.json có:", sorted(rel))
+""")
+code("""
+def _pa(tag):
+    p = f"{EVAL}/{tag}/predict.log"
+    m = re.findall(r"PA=([-0-9.]+)", open(p).read()) if os.path.exists(p) else []
+    return float(m[-1]) if m else None
+def _llm(tag):
+    p = f"{EVAL}/validate_{tag}/metrics.json"
+    return json.load(open(p)).get("llm_only", {}) if os.path.exists(p) else {}
+f4 = lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else "-"
+RESULTS = {}
+if PHASE == "A":
+    print(f"{'cấu hình':9s} {'PA bản nhiễu':>13s} | {'LLM-only PA':>12s} {'coverage':>9s} {'precision':>10s}")
+    for t in ("rule", "base", "lora"):
+        RESULTS[t] = {"PA_noisy": _pa(f"noisy_{t}"), "llm_only": _llm(t)}
+        lo = RESULTS[t]["llm_only"]
+        print(f"{t:9s} {f4(RESULTS[t]['PA_noisy']):>13s} | {f4(lo.get('PA')):>12s} {f4(lo.get('coverage')):>9s} {f4(lo.get('precision')):>10s}")
+    json.dump(RESULTS, open(f"{EVAL}/results.json", "w"), indent=1)
+    r_, b_, l_ = (RESULTS[t] for t in ("rule", "base", "lora"))
+    no_harm = None not in (l_["PA_noisy"], r_["PA_noisy"]) and l_["PA_noisy"] >= r_["PA_noisy"]
+    better = "PA" in l_["llm_only"] and "PA" in b_["llm_only"] and l_["llm_only"]["PA"] > b_["llm_only"]["PA"]
+    print()
+    print("không làm hỏng G1 (lora >= rule trên bản nhiễu):", no_harm)
+    print("fine-tune giúp LLM (LLM-only: lora > base):     ", better)
+    print("=> DÙNG adapter" if no_harm and better else "=> CHƯA nên dùng adapter: xem hướng dẫn bên dưới")
+""")
+code("""
+# (Tuỳ chọn, chỉ CPU) Chấm lại các lần chạy cũ trên câu hỏi gốc (EVAL/base, EVAL/lora), nếu có. Các lần đó G4 không
+# chạy, nên chỉ có số đo cho G2, G3.
+for t in ("base", "lora"):
+    if os.path.isdir(f"{EVAL}/{t}/logs"):
+        print("=====", t, "(câu hỏi gốc của fold giữ riêng)")
+        !cd {REPO} && python scripts/validate.py {EVAL}/{t}/logs data/train/answers.jsonl --folds 3 --out {EVAL}/validate_clean_{t} | grep -A10 "per generator"
 """)
 
 md("""
-**Quyết định**: chỉ dùng adapter nếu `lora` có PA **cao hơn cả** `base` và `rule`. Nếu thấp hơn, đừng nộp nó:
-thử `LR` nhỏ hơn hoặc `MAX_PER_TASK` khác, xoá thư mục `RUN` trên Drive rồi train lại. Nếu tốt hơn, có thể chuyển
-sang `PHASE = "B"` (train trên cả 30 shop) và chạy lại notebook. Ở pha B, bỏ qua bước đánh giá và giữ
-`reliability_phaseA.json`.
+**Đọc bảng per generator:** `precision` là tỉ lệ đúng khi generator đó trả lời. `G1 silent` là các câu G1 không trả
+lời được, hoặc trả lời nhưng tự đánh dấu là nghi ngờ; đây chính là phần LLM có thể thêm điểm.
+
+**Quyết định:**
+- Cả hai dòng kiểm tra đều `True`: dùng adapter. Nộp file ở ô 7. Có thể làm **pha B**: đặt `PHASE = "B"` (và
+  `MAX_PER_TASK` lớn hơn nếu đủ unit) rồi chạy lại notebook, để có adapter học trên cả 30 shop. Pha B bỏ qua mục 6 và
+  dùng `reliability_phaseA.json`.
+- `LLM-only: lora > base` sai: fine-tune chưa giúp được. Thử `LR = 5e-5` hoặc `MAX_PER_TASK` khác, xoá thư mục `RUN`
+  trên Drive rồi train lại.
+- `lora >= rule` sai: LLM đang làm hỏng một vài câu G1 đã đúng. Xem `EVAL/validate_lora/errors.jsonl`.
+
+Bản nhiễu vẫn được làm từ train, nên nó chỉ là ước lượng. **Điểm thật duy nhất trên public là leaderboard.**
 """)
 
 md("## 7. Tạo `submission.jsonl` cho public test bằng model fine-tune")
 code("""
-PUB = f"{WORK}/public_phase{PHASE}/submission.jsonl"
-if not os.path.exists(PUB):
-    !cd {REPO} && cp {WORK}/reliability_phaseA.json artifacts/reliability.json 2>/dev/null; \\
-        python -m datamate.predict --data data/public_test --llm vllm --model {BASE} --lora {RUN}/adapter_bf16 {VLLM_FLAGS} --out {PUB}
+PUBD = f"{WORK}/public_phase{PHASE}"
+PUB = f"{PUBD}/submission.jsonl"
+REL = f"{WORK}/reliability_phaseA.json"
+assert os.path.exists(REL), "Chưa có reliability_phaseA.json: chạy mục 6 ở pha A trước"
+rel_now = open(REL, encoding="utf-8").read()
+used = f"{PUBD}/reliability_used.json"
+if not (os.path.exists(PUB) and os.path.exists(used) and open(used, encoding="utf-8").read() == rel_now):
+    # Tạo lại khi reliability thay đổi. File của lần trước được tạo với reliability thiếu G1_rule; nó được giữ ở *_prev.
+    if os.path.isdir(PUBD):
+        shutil.rmtree(PUBD + "_prev", ignore_errors=True); shutil.move(PUBD, PUBD + "_prev")
+    os.makedirs(PUBD)
+    shutil.copy(REL, f"{REPO}/artifacts/reliability.json")
+    r = subprocess.run(f"cd {REPO} && python -m datamate.predict --data data/public_test --llm vllm --model {BASE} "
+                       f"--lora {RUN}/adapter_bf16 {VLLM_FLAGS} --out {PUB}", shell=True, capture_output=True, text=True)
+    open(f"{PUBD}/predict.log", "w").write(r.stderr)
+    print("\\n".join(l for l in r.stderr.splitlines() if "[datamate]" in l))
+    if r.returncode != 0:
+        print(r.stderr[-3000:]); raise RuntimeError("predict trên public lỗi, xem log ở trên")
+    open(used, "w", encoding="utf-8").write(rel_now)
 !cd {REPO} && python scripts/check_submission.py {PUB} data/public_test/questions.jsonl
+""")
+code("""
+# So với bản rule-only đã nộp (PA public 0,561), không cần nhãn: những câu khác nhau là chỗ điểm leaderboard có thể đổi.
+# Mỗi khác biệt ghi vào diff_vs_rule_only.jsonl để đọc bằng mắt. Đừng sửa luật / prompt theo từng câu public.
+!cd {REPO} && python scripts/compare_submissions.py submissions/public_test_rule_only.jsonl {PUB} --questions data/public_test/questions.jsonl --logs {PUBD}/logs --out {PUBD}/diff_vs_rule_only.jsonl
 """)
 
 md("""
@@ -205,52 +304,91 @@ md("""
 và không bao giờ in ra màn hình. Mỗi lần đẩy dùng khoảng 0,26 GB dung lượng Git LFS (gói miễn phí của GitHub: 1 GB
 lưu trữ và 1 GB băng thông mỗi tháng).
 
+Ô này dừng lại kèm thông báo lỗi nếu có bước nào hỏng. Nó kiểm tra adapter **thật sự** đi qua Git LFS trước khi đẩy,
+và sau khi đẩy thì kiểm tra nhánh đã có trên GitHub. Nhánh luôn được tạo lại từ `origin/BRANCH`, nên commit hỏng của
+lần trước (adapter commit như file thường, bị GitHub từ chối) bị bỏ đi. Nếu `OUT_BRANCH` đã có trên GitHub, kết quả
+được đẩy lên một nhánh mới có thêm ngày giờ, không ghi đè nhánh cũ.
+
 Repo hiện ở chế độ **public**: đọc lại luật cuộc thi về việc công bố dữ liệu và weights học từ dữ liệu trước khi đẩy.
 """)
 code("""
-import json, shutil, datetime, tempfile
+import json, shutil, datetime
 from google.colab import userdata
+token = userdata.get("GITHUB_TOKEN")
+assert token, "Chưa có secret GITHUB_TOKEN (biểu tượng chìa khoá bên trái, bật Notebook access)"
+assert shutil.which("git-lfs"), "Chưa cài git-lfs: chạy lại ô clone ở mục 2"
+env = dict(os.environ, GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0")
+HELPER = 'credential.helper=!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+def git(*args, quiet=False, check=True):
+    r = subprocess.run(["git", "-C", REPO, "-c", "credential.helper=", "-c", HELPER, *args],
+                       env=env, capture_output=True, text=True)
+    out = (r.stdout + r.stderr).replace(token, "***").strip()
+    if out and not quiet:
+        print(out[-2000:])
+    if check and r.returncode != 0:
+        if quiet:
+            print(out[-2000:])
+        raise RuntimeError(f"git {args[0]} lỗi (mã {r.returncode}), xem thông báo ở trên")
+    return r
+
+# 1. nhánh sạch từ origin/BRANCH; không ghi đè một nhánh kết quả đã có trên GitHub
+git("lfs", "install", "--local", quiet=True)
+git("fetch", "-q", "origin")
+out_branch = OUT_BRANCH
+if git("ls-remote", "--heads", "origin", out_branch, quiet=True).stdout.strip():
+    out_branch = f"{OUT_BRANCH}-{datetime.datetime.now():%Y%m%d-%H%M}"
+    print(f"{OUT_BRANCH} đã có trên GitHub, đẩy lên nhánh mới {out_branch}")
+git("checkout", "-q", "-f", "-B", out_branch, f"origin/{BRANCH}")
+
+# 2. kết quả: adapter, reliability, file nộp, ghi chú huấn luyện
 ad_src, ad_dst = f"{RUN}/adapter_bf16", f"{REPO}/models/adapter"
+assert os.path.exists(f"{ad_src}/adapter_model.safetensors"), f"Không thấy adapter ở {ad_src}"
 shutil.rmtree(ad_dst, ignore_errors=True)
 shutil.copytree(ad_src, ad_dst)
-if os.path.exists(f"{WORK}/reliability_phaseA.json"):
-    shutil.copy(f"{WORK}/reliability_phaseA.json", f"{REPO}/artifacts/reliability.json")
+REL = f"{WORK}/reliability_phaseA.json"
+if os.path.exists(REL):
+    shutil.copy(REL, f"{REPO}/artifacts/reliability.json")
+PUB = f"{WORK}/public_phase{PHASE}/submission.jsonl"
 os.makedirs(f"{REPO}/submissions", exist_ok=True)
 if os.path.exists(PUB):
     shutil.copy(PUB, f"{REPO}/submissions/public_test_lora_phase{PHASE.lower()}.jsonl")
-pa = {}
-for tag in ("rule", "base", "lora"):
-    p = f"{EVAL}/{tag}.log"
-    if os.path.exists(p):
-        m = re.findall(r"PA=([-0-9.]+)", open(p).read())
-        pa[tag] = m[-1] if m else "?"
+res_path = f"{WORK}/eval_phaseA/results.json"
+results = json.load(open(res_path)) if os.path.exists(res_path) else {}
 counts = {}
 for f in (f"{DATA}/sft.jsonl", f"{DATA}/sql_sft/sql_sft.jsonl"):
-    for l in open(f, encoding="utf-8"):
-        t = json.loads(l)["task"]; counts[t] = counts.get(t, 0) + 1
+    if os.path.exists(f):
+        for l in open(f, encoding="utf-8"):
+            t = json.loads(l)["task"]; counts[t] = counts.get(t, 0) + 1
 open(f"{ad_dst}/TRAINING.md", "w", encoding="utf-8").write(f'''# LoRA adapter — phase {PHASE}
 
-- base: Qwen/Qwen3-14B; method: {"QLoRA 4-bit" if QLORA else "LoRA BF16"}, rank 32, epochs {EPOCHS}, lr {LR}, max-per-task {MAX_PER_TASK}
+- base: Qwen/Qwen3-14B; method: {"QLoRA 4-bit" if globals().get("QLORA") else "LoRA BF16"}, rank 32, epochs {EPOCHS}, lr {LR}, max-per-task {MAX_PER_TASK}
 - data: train split only{"; held-out fold " + str(HOLDOUT_FOLD) + " not used for training" if PHASE == "A" else "; all 30 shops"}
 - examples per task (before the cap): {json.dumps(counts, ensure_ascii=False)}
-- GPU: {name}; date: {datetime.date.today()}
-- PA on held-out fold {HOLDOUT_FOLD} (553 questions): {json.dumps(pa)}
+- GPU: {globals().get("name", "?")}; date: {datetime.date.today()}
+- phase A evaluation on the held-out fold {HOLDOUT_FOLD}, noisy copy (scripts/make_noisy_split.py):
+  PA end-to-end and LLM generators only (G1 removed): {json.dumps(results)}
 ''')
-token = userdata.get("GITHUB_TOKEN")
-askpass = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False)
-askpass.write("#!/bin/sh\\necho \\"$GITHUB_TOKEN\\"\\n"); askpass.close(); os.chmod(askpass.name, 0o700)
-env = dict(os.environ, GITHUB_TOKEN=token, GIT_ASKPASS=askpass.name, GIT_TERMINAL_PROMPT="0")
-def git(*args):
-    r = subprocess.run(["git", "-C", REPO, *args], env=env, capture_output=True, text=True)
-    print((r.stdout + r.stderr).replace(token, "***")[-1500:])
-    return r.returncode
-git("config", "user.name", "datamate-colab"); git("config", "user.email", "datamate-colab@users.noreply.github.com")
-git("checkout", "-B", OUT_BRANCH)
-git("add", "models/adapter", "artifacts/reliability.json", "submissions")
-git("commit", "-m", f"Colab fine-tune phase {PHASE}: LoRA adapter, reliability, public submission")
-url = "https://x-access-token@" + REPO_URL.split("https://", 1)[1]
-git("push", url, f"HEAD:{OUT_BRANCH}")
-os.remove(askpass.name)
+
+# 3. kiểm tra trước khi đẩy: adapter phải là con trỏ LFS, không file nào quá giới hạn 100 MB của GitHub
+git("add", "-A", "models/adapter", "artifacts/reliability.json", "submissions")
+attr = git("check-attr", "filter", "--", "models/adapter/adapter_model.safetensors", quiet=True).stdout
+assert "lfs" in attr, f".gitattributes không đưa adapter qua LFS: {attr}"
+staged = git("diff", "--cached", "--name-only", quiet=True).stdout.split()
+for p in staged:
+    size = int(git("cat-file", "-s", f":{p}", quiet=True).stdout)
+    assert size < 95_000_000, f"{p} có {size / 1e6:.0f} MB trong git: GitHub sẽ từ chối (git-lfs chưa hoạt động?)"
+ptr = git("cat-file", "-p", ":models/adapter/adapter_model.safetensors", quiet=True).stdout
+assert ptr.startswith("version https://git-lfs"), "adapter_model.safetensors chưa phải con trỏ Git LFS"
+print("đã kiểm tra:", len(staged), "file; adapter đi qua Git LFS")
+
+# 4. commit + push (Git LFS tải weights lên trong lúc push), rồi xác nhận nhánh đã có trên GitHub
+if git("diff", "--cached", "--quiet", quiet=True, check=False).returncode:
+    git("commit", "-q", "-m", f"Colab fine-tune phase {PHASE}: LoRA adapter, reliability, public submission")
+git("lfs", "ls-files")
+git("push", "origin", f"HEAD:refs/heads/{out_branch}")
+assert git("ls-remote", "--heads", "origin", out_branch, quiet=True).stdout.strip(), "Push chưa tới GitHub"
+web = REPO_URL[:-4] if REPO_URL.endswith(".git") else REPO_URL
+print(f"XONG: {web}/tree/{out_branch}")
 """)
 
 md("""
@@ -260,6 +398,7 @@ Chỉ cần nếu muốn dùng `Dockerfile.finetuned` (model khoảng 30 GB). `D
 không cần bước này. Cần khoảng 60 GB đĩa và runtime High-RAM. Repo trên Hub mặc định **private**.
 """)
 code("""
+from google.colab import userdata
 HF_REPO = "<hf-username>/datamate-qwen3-14b-ft"     # đổi thành tên của bạn
 os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
 !cd {REPO} && python training/sft_lora.py --merge --model {BASE} --adapter {RUN}/adapter_bf16 --out /content/merged
