@@ -94,11 +94,7 @@ class VLLMBackend(LLMBackend):
         kw = dict(n=n, temperature=temperature, top_p=1.0 if temperature == 0 else 0.95, max_tokens=max_tokens,
                   seed=seed, stop=stop)
         if json_schema is not None:
-            try:
-                from vllm.sampling_params import GuidedDecodingParams
-                kw["guided_decoding"] = GuidedDecodingParams(json=json_schema)
-            except Exception:
-                pass
+            kw.update(_json_constraint(json_schema))
         sp = SamplingParams(**kw)
         outs = self.llm.generate(prompts, sp, use_tqdm=False, lora_request=self.lora)
         self.last_usage = [(len(o.prompt_token_ids or []), [len(c.token_ids) for c in o.outputs]) for o in outs]
@@ -167,6 +163,21 @@ def make_backend(cfg: Dict) -> LLMBackend:
     except Exception as e:  # never let a GPU problem kill the run: degrade to rule-only
         print(f"[llm] failed to start {kind}: {e} -> rule-only mode")
     return NullBackend()
+
+
+def _json_constraint(schema: dict) -> dict:
+    """SamplingParams kwargs that force JSON output: vLLM >= 0.11 'structured_outputs', older 'guided_decoding'."""
+    try:
+        from vllm.sampling_params import StructuredOutputsParams
+        return {"structured_outputs": StructuredOutputsParams(json=schema)}
+    except ImportError:
+        pass
+    try:
+        from vllm.sampling_params import GuidedDecodingParams
+        return {"guided_decoding": GuidedDecodingParams(json=schema)}
+    except ImportError:
+        print("[llm] this vLLM has no JSON-constrained decoding: outputs are parsed without a schema")
+        return {}
 
 
 def _lora_rank(path: str) -> int:

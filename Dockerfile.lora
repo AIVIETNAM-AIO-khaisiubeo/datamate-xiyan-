@@ -4,7 +4,7 @@
 #   python scripts/count_params.py /models/qwen3-14b models/adapter
 # Before building: git lfs pull   (otherwise models/adapter/*.safetensors are only LFS pointer files)
 #   docker build -f Dockerfile.lora -t datamate-xiyan:lora .
-ARG BASE_IMAGE=vllm/vllm-openai:v0.10.1.1
+ARG BASE_IMAGE=vllm/vllm-openai:v0.12.0
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1

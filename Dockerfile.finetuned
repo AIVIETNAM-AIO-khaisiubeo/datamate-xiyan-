@@ -3,7 +3,7 @@
 # image contains exactly one 14.8B model (check: python scripts/count_params.py outputs/merged).
 # Needs BuildKit (default in Docker >= 23), which reads Dockerfile.finetuned.dockerignore.
 #   docker build -f Dockerfile.finetuned -t datamate-xiyan:ft .
-ARG BASE_IMAGE=vllm/vllm-openai:v0.10.1.1
+ARG BASE_IMAGE=vllm/vllm-openai:v0.12.0
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1

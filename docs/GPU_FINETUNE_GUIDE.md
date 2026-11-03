@@ -89,7 +89,7 @@ gốc khoảng 30 GB, bản merge khoảng 30 GB, cùng checkpoint và cache.
 git clone https://github.com/AIVIETNAM-AIO-khaisiubeo/datamate-xiyan-.git
 cd datamate-xiyan-
 python -m venv .venv && source .venv/bin/activate
-pip install "vllm==0.10.1.1"                 # kéo theo PyTorch có CUDA; dùng đúng phiên bản như Dockerfile
+pip install "vllm==0.12.0"                   # kéo theo PyTorch 2.9.0 có CUDA; cùng phiên bản với Dockerfile
 pip install -r requirements.txt pytest "huggingface_hub[cli]"
 export DATAMATE_CACHE=.cache
 python -m pytest -q tests/                  # mọi test pass
@@ -222,7 +222,7 @@ Quy trình hai pha giúp **đo được** fine-tune có lợi hay không, mà kh
 ### F0. Cài môi trường huấn luyện
 
 ```bash
-pip install "vllm==0.10.1.1"                # kéo theo torch 2.7.1
+pip install "vllm==0.12.0"                  # kéo theo torch 2.9.0
 pip install -r requirements-train.txt       # đã ghim: transformers 4.57.6, trl 0.24.0, peft 0.17.1, bitsandbytes
 export DATAMATE_CACHE=.cache
 ```
@@ -383,7 +383,8 @@ Nộp `result/submission.jsonl` lên leaderboard và nộp image theo hướng d
 | stderr in `-> rule-only mode` | Sai `--model`, thiếu GPU hoặc vLLM lỗi; xem dòng `[llm] failed to start …` |
 | `CUDA out of memory` khi suy luận | Giảm `--max-len` (12288 hoặc 8192), thêm `--quant fp8`, hoặc tăng `--tp` |
 | `CUDA out of memory` khi fine-tune | Thêm `--qlora`, giảm `--max-len` (6144), giữ `--batch 1` |
-| `SFTConfig.__init__() got an unexpected keyword argument 'warmup_ratio'`, hoặc cảnh báo `torch_dtype is deprecated` | Môi trường đang có transformers 5.x / TRL 1.x. Cài lại bản đã ghim: `pip install -r requirements-train.txt` (transformers 4.57.6, trl 0.24.0, peft 0.17.1, cài **sau** `vllm==0.10.1.1`), restart session, chạy `training/smoke_test.py` |
+| `Could not find a version that satisfies the requirement vllm==0.10.1.1` / `Requires-Python <3.13` | Python 3.13 (Colab hiện nay) không có vLLM 0.10.x. Repo đã chuyển sang `vllm==0.12.0` (Python 3.10–3.13, torch 2.9.0, Dockerfile `vllm/vllm-openai:v0.12.0`): `git pull` rồi cài lại |
+| `SFTConfig.__init__() got an unexpected keyword argument 'warmup_ratio'`, hoặc cảnh báo `torch_dtype is deprecated` | Môi trường đang có transformers 5.x / TRL 1.x. Cài lại bản đã ghim: `pip install -r requirements-train.txt` (transformers 4.57.6, trl 0.24.0, peft 0.17.1, cài **sau** `vllm==0.12.0`), restart session, chạy `training/smoke_test.py` |
 | Log không có `G4_*` | G4 chỉ chạy cho câu chưa chắc; dùng `--g4-scope all` để thử, hoặc kiểm tra `--generators` |
 | PA train với LLM thấp hơn rule-only | Bình thường khi chưa hiệu chuẩn: chạy D4 (`--write-reliability`), hoặc tắt generator kém (D5) |
 | Docker build lỗi ở `COPY outputs/merged` | Chưa merge (F5), hoặc Docker không có BuildKit; bật bằng `DOCKER_BUILDKIT=1` |

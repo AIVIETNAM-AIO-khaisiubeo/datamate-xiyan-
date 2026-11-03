@@ -64,7 +64,10 @@ RUN = f"{WORK}/lora_phase{PHASE}"
 EVAL = f"{WORK}/eval_phase{PHASE}"
 os.environ["DATAMATE_CACHE"] = "/content/cache"
 os.environ["PYTHONIOENCODING"] = "utf-8"
-print(PHASE, DATA, RUN)
+os.environ["USE_TF"] = "0"                # transformers không nạp TensorFlow của Colab (tránh log "cuda drivers")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+import sys
+print(PHASE, DATA, RUN, "| Python", sys.version.split()[0])
 """)
 
 md("## 2. GPU, Google Drive, repo")
@@ -94,17 +97,18 @@ else:
 
 md("## 3. Cài thư viện và tải Qwen3-14B")
 code("""
-# vLLM (suy luận) kéo theo PyTorch 2.7.1; sau đó là thư viện huấn luyện ĐÃ GHIM phiên bản (transformers 4.57.6,
-# trl 0.24.0, peft 0.17.1). Không dùng transformers 5.x / trl 1.x: chúng làm hỏng cả sft_lora.py lẫn vLLM 0.10.1.1.
-# Mất khoảng 5 phút. Pip có thể in cảnh báo xung đột với gói sẵn có của Colab: bỏ qua được.
-!pip install -q "vllm==0.10.1.1"
+# vLLM 0.12.0 (suy luận; hỗ trợ Python 3.10-3.13 như Colab hiện nay) kéo theo PyTorch 2.9.0; sau đó là thư viện
+# huấn luyện ĐÃ GHIM (transformers 4.57.6, trl 0.24.0, peft 0.17.1). Không dùng transformers 5.x / trl 1.x.
+# Mất khoảng 5-10 phút. Pip có thể in cảnh báo xung đột với gói sẵn có của Colab (TensorFlow, ...): bỏ qua được.
+!pip install -q "vllm==0.12.0"
 !cd {REPO} && pip install -q -r requirements.txt -r requirements-train.txt
-!python -c "import torch, transformers, trl, peft, vllm; print('torch', torch.__version__, '| transformers', transformers.__version__, '| trl', trl.__version__, '| peft', peft.__version__, '| vllm', vllm.__version__)"
+!python -c "import torch, transformers, trl, peft, vllm; print('torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| transformers', transformers.__version__, '| trl', trl.__version__, '| peft', peft.__version__, '| vllm', vllm.__version__)"
 """)
 md("""
-Dòng cuối phải in `transformers 4.57.6 | trl 0.24.0 | peft 0.17.1 | vllm 0.10.1.1`. Nếu phiên này đã từng cài phiên bản
-khác (ví dụ transformers 5.x), vào **Runtime → Restart session**, rồi chạy lại ô 1, ô GPU, ô mount Drive và tiếp tục từ
-ô tải model. Thư viện đã cài vẫn còn sau khi restart session.
+Dòng cuối phải in `cuda True | transformers 4.57.6 | trl 0.24.0 | peft 0.17.1 | vllm 0.12.0`.
+- `cuda False`: runtime không có GPU → Runtime → Change runtime type → A100 / L4.
+- Nếu phiên này đã từng cài phiên bản khác (ví dụ transformers 5.x), vào **Runtime → Restart session**, rồi chạy lại ô 1,
+  ô GPU, ô mount Drive và tiếp tục từ ô tải model. Thư viện đã cài vẫn còn sau khi restart session.
 """)
 code("""
 from huggingface_hub import snapshot_download

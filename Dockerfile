@@ -1,7 +1,7 @@
 # DataMate-XiYan — Zalo AI Challenge 2026 (DataMate track)
 # Follow the organisers' Docker guideline for the exact base image; BASE_IMAGE must provide
 # CUDA >= 12.8 and a vLLM / PyTorch build for Blackwell (RTX 5090).
-ARG BASE_IMAGE=vllm/vllm-openai:v0.10.1.1
+ARG BASE_IMAGE=vllm/vllm-openai:v0.12.0
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1

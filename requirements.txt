@@ -5,5 +5,5 @@ python-calamine>=0.2
 openpyxl>=3.1
 duckdb>=1.0
 # GPU / LLM mode (already present in the vLLM base image)
-# vllm>=0.10  (CUDA >= 12.8 build for Blackwell / RTX 5090)
+# vllm==0.12.0  (CUDA >= 12.8 build for Blackwell / RTX 5090; Python 3.10-3.13)
 # transformers>=4.51

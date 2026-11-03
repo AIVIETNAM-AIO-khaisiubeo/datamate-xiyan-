@@ -64,3 +64,10 @@ def test_sft_config_filtering_and_versions():
 
     with pytest.raises(SystemExit):
         _sft_kwargs(OldCfg, {"output_dir": "x", "max_length": 8, "completion_only_loss": True})
+
+
+def test_json_constraint_without_vllm_is_empty():
+    import importlib.util
+    from datamate.llm.backend import _json_constraint
+    if importlib.util.find_spec("vllm") is None:      # CPU dev box: no vLLM -> no constraint, no crash
+        assert _json_constraint({"type": "object"}) == {}

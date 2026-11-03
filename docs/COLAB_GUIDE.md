@@ -59,6 +59,10 @@ cho phiên dài hơn nhưng không vô hạn.
 **Compute units:** A100 tiêu nhiều unit mỗi giờ hơn L4. Xem số unit còn lại ở góc phải trên. Nếu ít unit, giảm
 `MAX_PER_TASK` (ví dụ 800) cho pha A.
 
+**Lỗi `No matching distribution found for vllm==0.10.1.1`** (pip báo `Requires-Python <3.13`): Colab đã lên Python
+3.13 mà vLLM 0.10.x chưa hỗ trợ. Notebook mới dùng `vllm==0.12.0` (Python 3.10–3.13). Chạy lại ô clone (`git pull`) rồi ô
+cài thư viện; dòng kiểm tra phải in `vllm 0.12.0`.
+
 **Lỗi `unexpected keyword argument 'warmup_ratio'`** (hoặc cảnh báo `torch_dtype is deprecated`): phiên Colab đang có
 transformers 5.x. Kéo code mới (ô clone chạy `git pull`), chạy lại ô cài thư viện để có bản đã ghim (transformers
 4.57.6, trl 0.24.0, peft 0.17.1), **Runtime → Restart session**, chạy lại ô 1, ô GPU, ô Drive. Bỏ qua tải model nếu đã
