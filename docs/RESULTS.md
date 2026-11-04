@@ -73,6 +73,20 @@ train:
   Ở private, câu hỏi nhắc tới một dòng mới thì G1, G2, G3 bị đánh dấu, và chỉ SQL kèm chính dòng đó (làm evidence) được
   trả lời. Trên train và public, chốt này không đổi gì.
 
+**Đổi cách trình bày dữ liệu** (`scripts/perturb_split.py`, 6 shop của fold 0, 553 câu, chỉ G1). Không giá trị nào bị
+đổi; chỉ cách sắp xếp file khác đi:
+
+| Biến thể | PA | Đáp án giống bản gốc |
+|---|---:|---:|
+| bản gốc | 1.0000 | — |
+| đảo thứ tự cột | 1.0000 | 553/553 |
+| đảo thứ tự sheet | 1.0000 | 553/553 |
+| header viết hoa | 1.0000 | 553/553 |
+| CSV dùng `;` | 1.0000 | 553/553 |
+
+Phần ingest không phụ thuộc thứ tự cột, thứ tự sheet, chữ hoa/thường của header hay ký tự phân tách của CSV. Phép thử
+này **không** đo tên cột mới hay sổ sách của loại shop mới; đó là phần leave-intent-out và chốt rulebook nhắm tới.
+
 | | Bản nộp 1 (điểm BTC **0.561**) | Bản 2 (hiện tại) |
 |---|---:|---:|
 | Trả lời giá trị | 850 | 920 |
