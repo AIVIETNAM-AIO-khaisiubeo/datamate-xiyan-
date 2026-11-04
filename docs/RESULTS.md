@@ -60,8 +60,7 @@ chạy lại toàn bộ với G4 đã sửa.
 
 **Bản 4 (7b, T4, bộ chọn mới + G4 đã sửa): 0.895.** So với bản 2, bản 4 không thay đáp án nào, trả lời thêm 49 câu mà
 G1 bỏ trống hoặc tự đánh dấu nghi ngờ, và bỏ trống 18 câu chỉ vì LLM trái ý G1. Vì giống bản 2 ở 933/1000 câu, điểm
-của nó phải nằm trong khoảng 0.845–0.979. (Lần nộp đầu báo 0.777000, đúng bằng điểm bản 3: file được nộp lần đó là bản
-3, vì hai file tải về có tên gần như trùng nhau.)
+của nó phải nằm trong khoảng 0.845–0.979. 
 
 Đọc điểm 0.895 (chỉ dùng hai con số tổng, không dùng nhãn từng câu). Bản 4 kém bản 2 17 điểm, và mọi chênh lệch nằm ở
 67 câu:
