@@ -204,10 +204,12 @@ def test_perturb_split_keeps_every_value():
 def test_leave_intent_out_scores_only_the_sql_route():
     import leave_intent_out as lio
     recs = []
+    # SQL right on three intents, wrong on 'units': right 75 % of the time, so it may answer where G1 is removed
+    # (with SQL right only half of the time, its measured __solo__ reliability is 0.5 and it never answers alone)
     for s in range(6):
-        for i, it in enumerate(("revenue", "units")):
+        for i, it in enumerate(("revenue", "aov", "order_count", "units")):
             gold = 10 + i
-            g4v = gold if it == "revenue" else gold + 1
+            g4v = gold if it != "units" else gold + 1
             mk = lambda gen, v, **d: __import__("datamate.select.selector", fromlist=["Candidate"]).Candidate(
                 gen, __import__("datamate.engine.answer", fromlist=["Answer"]).Answer("number", v), d.pop("intent", None), d)
             recs.append({"id": f"q{s}{i}", "biz": f"b{s}", "question": "?", "ref": {"type": "number", "answer": gold},

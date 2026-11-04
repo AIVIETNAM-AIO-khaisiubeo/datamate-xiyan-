@@ -568,7 +568,9 @@ Trạng thái của từng giới hạn (cập nhật 2026-11-04):
 5. **Calibration:** G2, G3, G4, G_select đã được hiệu chuẩn trên shop giữ riêng (`validate.py --write-reliability`).
    Khoá `unanswerable` co về 0,5. Độ tin cậy của LLM khi nó **phản đối** một đáp án G1 không bị đánh dấu được đo riêng
    (`__dissent__`); trên public, phần này nâng điểm từ 0.895 lên 0.909. Độ tin cậy của LLM khi G1 bỏ trống hoặc tự
-   đánh dấu **chưa** được đo riêng; trên public, các câu đó đúng khoảng một nửa. Hiệu chuẩn G1 vẫn lấy từ train, nên lạc
+   đánh dấu được đo riêng (`__solo__`, prior 0,5). Với G2/G3, phép đo dựa trên rất ít câu (5–6 câu trên shop giữ riêng),
+   nên giá trị gần như là prior. Trên public, các câu đó đúng khoảng một nửa. Các lỗi tìm được ở đó (kết quả 0 của SQL,
+   hỏi giờ trả lời ngày, hỏi về thứ sổ sách không ghi) được chặn bằng bộ kiểm tra chung. Hiệu chuẩn G1 vẫn lấy từ train, nên lạc
    quan.
 6. **Schema Filter không LLM:** chưa đổi. Kiểm tra cách trình bày dữ liệu (`perturb_split.py`) đo ingest, không đo
    Schema Filter.

@@ -27,7 +27,9 @@ sys.path.insert(0, ROOT)
 
 from datamate.scorer import score_one  # noqa: E402
 from datamate.select.logs import candidates_from_log  # noqa: E402
-from datamate.select.selector import DISSENT_KEY, Selector, is_clean_rule  # noqa: E402
+from datamate.select.selector import DISSENT_KEY, SOLO_KEY, Selector, is_clean_rule, is_llm_gen  # noqa: E402
+
+SQL_GENS = ("G4", "G_select")
 
 
 def load(logs_dir, answers):
@@ -83,6 +85,23 @@ def fit(recs, k=10.0, prior=0.9, cap=0.985, unans_prior=0.5):
             dis[c.gen][0 if s == 1 else 1] += 1
     for g, (ok, bad) in dis.items():
         rel[g][DISSENT_KEY] = round(min(cap, (ok + k * 0.5) / (ok + bad + k)), 4)
+    # how often an LLM candidate is right where no clean rule answer exists (selector: its weight there); prior 0.5,
+    # written for every LLM generator seen, so one never measured there weighs 0.5 (no fill-in on its own).
+    # The SQL routes do not go through the rule engine, so every held-out SQL answer counts (leave-intent-out view:
+    # G1 removed); G2 / G3 execute through the rule engine and count only where G1 itself had no clean answer.
+    solo = collections.defaultdict(lambda: [0, 0])
+    for r in recs:
+        clean = any(is_clean_rule(c) for c in r["cands"])
+        for c in r["cands"]:
+            if not is_llm_gen(c.gen) or c.answer.type == "abstain":
+                continue
+            counts = solo[c.gen]                          # registered: written even with no sample
+            if clean and not c.gen.startswith(SQL_GENS):
+                continue
+            s = score_one(c.answer.to_submission(r["id"]), r["ref"])
+            counts[0 if s == 1 else 1] += 1
+    for g, (ok, bad) in solo.items():
+        rel[g][SOLO_KEY] = round(min(cap, (ok + k * 0.5) / (ok + bad + k)), 4)
     return dict(rel)
 
 

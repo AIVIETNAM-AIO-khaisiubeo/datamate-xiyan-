@@ -503,8 +503,9 @@ md("""
 - **7b (GPU; T4 khoảng 1,7 giờ):** chạy lại toàn bộ trên public với LLM. **Chỉ chạy khi chưa có**, hoặc khi đặt
   `RERUN_7B = True` (ví dụ sau khi đổi model hay adapter). Thay đổi ở bộ chọn và các bộ kiểm tra không cần chạy lại 7b:
   ô 7c áp chúng lên log của 7b.
-- **7c (chỉ CPU, khoảng 1 phút): bản cuối để nộp.** Bộ chọn mới nhất, cộng các bộ kiểm tra (hình thức câu hỏi cho mọi
-  ứng viên, sự phản đối của LLM đã hiệu chuẩn, rulebook mới), áp lên log của 7b, với reliability vừa tính ở mục 6.
+- **7c (chỉ CPU, vài phút): bản cuối để nộp.** Bộ chọn mới nhất, cộng các bộ kiểm tra (hình thức câu hỏi cho mọi
+  ứng viên, kết quả 0 của SQL, câu hỏi về thứ sổ sách không ghi, rulebook mới), áp lên log của 7b. Ô tự đo lại
+  reliability trên shop giữ riêng (kể cả LLM khi trái ý G1 và khi G1 không chắc), nên không cần chạy lại mục 6.
   Ô in **mã sha256** của file. Kiểm tra đúng mã đó trước khi nộp, vì các file nộp có tên rất giống nhau.
 
 Mỗi file chỉ nộp **một lần**, và luôn so với bản rule-only. Đừng sửa luật theo từng câu public.
@@ -574,19 +575,41 @@ code("""
 !cd {REPO} && python scripts/compare_submissions.py submissions/public_test_rule_only.jsonl {PUB} --questions data/public_test/questions.jsonl --logs {PUBD}/logs --out {PUBD}/diff_vs_rule_only.jsonl
 """)
 code("""
-# 7c. BẢN CUỐI ĐỂ NỘP: bộ chọn mới nhất + các bộ kiểm tra, áp lên log của 7b (chỉ CPU)
-import hashlib
+# 7c. BẢN CUỐI ĐỂ NỘP: bộ chọn mới nhất + các bộ kiểm tra, áp lên log của 7b (chỉ CPU, vài phút)
+# Ô này tự đo lại reliability trên 6 shop giữ riêng (nhãn train) bằng code hiện tại, kể cả khoá __solo__ (LLM ở những
+# câu G1 không chắc), rồi mới replay. Bản cuối của lần chạy 7c trước được giữ ở submission_prev.jsonl để so.
+import hashlib, json, shutil
 PUBD = f"{WORK}/public_phase{PHASE}"
 REL = f"{WORK}/reliability_phaseA.json"
-if not os.path.exists(REL):
+NOISY = f"/content/noisy_fold{HOLDOUT_FOLD}"
+if os.path.isdir(f"{EVAL}/noisy_lora/logs"):
+    if not os.path.exists(f"{NOISY}/questions.jsonl"):
+        !cd {REPO} && python scripts/make_noisy_split.py data/train {NOISY} --fold {HOLDOUT_FOLD}
+    !cd {REPO} && git checkout -- artifacts/reliability.json
+    if os.path.exists(REL):
+        os.remove(REL)                 # tạo lại: reliability của repo (giữ G1_rule) + phần LLM đo bằng code hiện tại
+    !cd {REPO} && python scripts/validate.py {EVAL}/noisy_lora/logs {NOISY}/answers.jsonl --folds 3 --out {EVAL}/validate_lora --write-reliability {REL} | grep -A14 "per generator"
+    rel = json.load(open(REL, encoding="utf-8"))
+    assert "G1_rule" in rel and any("__solo__" in v for v in rel.values()), "reliability chưa có __solo__: repo chưa cập nhật?"
+    print("Độ tin cậy của LLM khi G1 không chắc (__solo__) và khi trái ý G1 (__dissent__), đo trên shop giữ riêng:")
+    for g in sorted(rel):
+        if "__solo__" in rel[g]:
+            print(f"  {g:11s} solo {rel[g]['__solo__']:.3f}   dissent {rel[g].get('__dissent__', 0.5):.3f}")
+elif not os.path.exists(REL):
     !cd {REPO} && git checkout -- artifacts/reliability.json
     REL = f"{REPO}/artifacts/reliability.json"
-    print("Chưa có reliability_phaseA.json: dùng reliability của repo (nên chạy ô validate ở mục 6 trước)")
+    print("Không có log noisy_lora trên Drive: dùng reliability của repo (không có __solo__)")
 FINAL = f"{WORK}/public_phase{PHASE}_final/submission.jsonl"
+PREV = FINAL.replace("submission.jsonl", "submission_prev.jsonl")
 assert os.path.isdir(f"{PUBD}/logs"), f"Không có log của 7b ở {PUBD}/logs: chạy 7b trước (GPU)"
+if os.path.exists(FINAL):
+    shutil.copy(FINAL, PREV)
 !cd {REPO} && python scripts/replay_selector.py {PUBD}/logs --data data/public_test --reliability {REL} --out {FINAL} --compare submissions/public_test_rule_only.jsonl
 !cd {REPO} && python scripts/check_submission.py {FINAL} data/public_test/questions.jsonl
 !cd {REPO} && python scripts/compare_submissions.py submissions/public_test_rule_only.jsonl {FINAL} --questions data/public_test/questions.jsonl --logs {PUBD}/logs --out {WORK}/public_phase{PHASE}_final/diff_vs_rule_only.jsonl | head -4
+if os.path.exists(PREV):
+    print("\\nSo với bản cuối của lần chạy 7c trước:")
+    !cd {REPO} && python scripts/compare_submissions.py {PREV} {FINAL} --questions data/public_test/questions.jsonl --logs {PUBD}/logs --out {WORK}/public_phase{PHASE}_final/diff_vs_prev.jsonl | head -14
 FINAL_SHA = hashlib.sha256(open(FINAL, "rb").read()).hexdigest()
 print(f"\\nFILE ĐỂ NỘP: {FINAL}\\nsha256: {FINAL_SHA}")
 print("Trên Drive: MyDrive/datamate/public_phaseA_final/submission.jsonl. Sau khi tải về, kiểm tra mã sha256 trùng với dòng trên.")

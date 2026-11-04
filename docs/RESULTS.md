@@ -107,6 +107,36 @@ Hai chỗ còn kém bản 2 là các câu LLM trả lời thay G1 (vẫn gần n
 G1 sẽ bỏ trống hoặc tự đánh dấu nhiều câu hơn, nên độ chính xác của LLM ở những câu này quyết định phần lớn điểm có LLM.
 Bước tiếp theo: hiệu chuẩn riêng độ tin cậy của LLM khi G1 bỏ trống hoặc tự đánh dấu (khởi điểm 0,5, như `__dissent__`).
 
+**Bản 6 (7c lần hai, chỉ CPU trên log của bản 4).** Đọc log của 53 câu bản 5 khác bản 2, không dùng nhãn, kiểm bằng dữ
+liệu public và nhãn train. Có bốn lỗi chung. Mọi thay đổi chỉ khiến hệ thống bỏ trống hoặc trả lại đáp án G1; không thay
+đổi nào cho LLM thêm câu trả lời.
+- **Lỗi bộ chọn: phiếu đồng ý bị tính là phiếu chống.** Ở 3/3 câu đã đọc trong 5 câu bản 5 còn bỏ trống:
+  - G1 cho ra một giá trị (độ tin cậy 0,7, vì intent chưa gặp trên train);
+  - G3 ra đúng giá trị đó, nhưng bị đánh dấu (0,3);
+  - tổng logit bằng 0, tức p = 0,5, nên câu bị bỏ trống.
+
+  Sửa (`selector.py`): họ mạnh nhất trong nhóm cho logit của chính nó, các họ đồng ý khác chỉ được cộng thêm, không được
+  trừ đi.
+- **Kết quả 0 từ SQL.** Trên train, chỉ 4/2.462 đáp án số bằng 0, và cả 4 đều hỏi về hàng không bán được hoặc giá đổi mà
+  lượng bán không đổi. Ở public, LLM trả lời 0 cho 5 câu. Với 3 câu đếm xe SH Mode / Air Blade / Wave Alpha, sổ sửa xe có
+  13–21 lượt mỗi loại trong tháng được hỏi. Với câu "xe vô sửa từ 2 lần trở lên", sổ có 22–29 xe như vậy. Bộ kiểm tra
+  (`form_guard.py`) đánh dấu kết quả 0 của mọi route LLM. Không đánh dấu khi câu hỏi hỏi về thứ không có ("ế", "không ai
+  mua") hoặc hỏi % thay đổi. Bộ máy luật đã có kiểm tra này cho frame của nó.
+- **Hình thức câu hỏi** (`consistency.check_form`):
+  - hỏi "mấy giờ" mà trả lời bằng một ngày;
+  - hỏi "mấy lượt / đơn / phiếu" mà intent là tiền và câu hỏi không nhắc tiền.
+- **Thứ sổ sách không ghi** ("ngon nhất", "chất lượng tốt nhất", "khó tính nhất"): không cột nào đo vị ngon, chất lượng
+  hay tính khí, nên câu trả lời của LLM chỉ là đoán (thường là mặt hàng bán chạy). Chỉ đánh dấu câu trả lời giá trị của
+  LLM; `unanswerable` giữ nguyên.
+- **`__solo__`** (`validate.py`): độ tin cậy của mỗi generator LLM ở những câu không có đáp án G1 sạch, prior 0,5. Với G2
+  và G3 chỉ có vài câu như vậy trên shop giữ riêng, nên giá trị gần 0,5–0,7. Với SQL, mọi câu trả lời trên shop giữ riêng
+  đều được tính, theo cách nhìn leave-intent-out. Ở các câu G1 không chắc, phiếu của LLM bị giới hạn ở mức này.
+
+Áp lên 48 câu LLM trả lời thay G1 ở bản 5, các bộ kiểm tra đánh dấu 9 câu: 5 câu ra 0, 1 câu hỏi giờ, 3 câu hỏi chất
+lượng. Cộng với 5 câu G1 được trả lại, bản 6 khác bản 5 ở khoảng 14 câu, nên điểm nằm trong khoảng 0.895–0.923. Nếu G1
+đúng ở 5 câu kia (như ở 13 câu lần trước) và 9 câu LLM bị chặn đều sai, điểm là 0.923, cao hơn bản 2 (0.912). Ảnh hưởng
+của `__solo__` chỉ biết được khi 7c chạy lại trên log noisy_lora.
+
 **Đổi cách trình bày dữ liệu** (`scripts/perturb_split.py`, 6 shop của fold 0, 553 câu, chỉ G1). Không giá trị nào bị
 đổi; chỉ cách sắp xếp file khác đi:
 

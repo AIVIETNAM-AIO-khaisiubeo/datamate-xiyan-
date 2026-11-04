@@ -23,6 +23,11 @@ _LIST = re.compile(r"\blan luot\b|\btung thang\b|\bmoi thang (?:bao nhieu|bn|duo
 _YESNO = re.compile(r"(?:phai|dung|dung vay|dung khong|co) (?:khong|ko|hong|hok|k)\b|\bdung khong\b|\bco phai\b|"
                     r"(?:khong|ko|hong|hok)\s*\??\s*$|\bhay khong\b")
 _DAYCOUNT = re.compile(r"\b(?:may|bao nhieu|bn|bnhiu|so) (?:bua|ngay|hom)\b")
+_HOUR = re.compile(r"\b(?:may|bao nhieu|bn|bnhiu) gio\b|\bgio nao\b|\bkhung gio\b")
+_COUNT = re.compile(r"\b(?:may|bao nhieu|bn|bnhiu) (?:luot|don|phieu|lan|khach|nguoi|chiec)\b")
+_MONEY_WORDS = re.compile(r"tien|doanh thu|dthu|\bdong\b|\blai\b|\bloi\b|chi phi|\bgia\b|\bvon\b|\bno\b|thu ve")
+_MONEY = {"revenue", "aov", "purchase_total", "avg_purchase_price", "stock_value", "debt_total", "repayments",
+          "gross_profit", "net_profit", "price_on"}
 SCALAR = {"number", "percent"}
 _NONZERO = {"revenue", "units", "order_count", "aov", "phone_units", "purchased_qty", "delivered_qty", "purchase_total",
             "share", "phone_pay_total", "phone_pay_avg", "repair_job_count", "delivery_trips", "gross_profit"}
@@ -51,6 +56,12 @@ def check_form(nq: str, ans, intent: Optional[str] = None) -> Optional[str]:
     # yes/no asked
     if t in SCALAR and _YESNO.search(s) and re.search(r"cao hon|thap hon|tang|giam|nhieu hon|it hon|lon hon", s):
         return "yes/no asked, scalar returned"
+    # an hour of the day asked ('mấy giờ', 'khung giờ nào'), a calendar date returned
+    if t == "date" and _HOUR.search(s):
+        return "hour asked, date returned"
+    # a count of visits / orders / tickets asked, an amount of money returned
+    if t == "number" and intent in _MONEY and _COUNT.search(s) and not _MONEY_WORDS.search(s):
+        return "count asked, money returned"
     return None
 
 

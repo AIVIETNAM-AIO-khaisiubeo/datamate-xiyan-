@@ -145,3 +145,73 @@ def test_known_rulebook_rows_cover_train_and_public():
         p = os.path.join(root, "data", split, "rulebook.md")
         if os.path.exists(p):
             assert new_rows(parse_rulebook(open(p, encoding="utf-8").read()), known) == []
+
+
+# ---- after the 0.909 run: cases read from its public logs (no labels used) ----
+
+def _q(gen, typ, v, intent=None, fam="qwen", **meta):
+    det = {"family": fam}
+    if gen.startswith("G4"):
+        det.update(sql="select " + str(v) + " -- " + gen, support=3)
+    return Candidate(gen, Answer(typ, v, meta=meta), intent, det)
+
+
+def test_an_agreeing_flagged_route_does_not_withhold_the_rule_answer():
+    # public "Th4/2026 máy mới chiếm mấy % tiền bán máy?": G1 77.26 (intent never seen on train: r 0.7), G3 the same
+    # value but flagged (r 0.3), G4 73.25.  Summing logits gave p 0.5 and the correct rule answer was withheld.
+    cands = [Candidate("G1_rule", Answer("percent", 77.26), "phone_rev_share"),
+             _q("G3_rewrite", "percent", 77.26, "phone_rev_share", conflict="group named but not resolved"),
+             _q("G4_base", "percent", 73.25), _q("G4_cte", "percent", 73.25), _q("G4_alias", "percent", 73.25)]
+    a, info = sel().select(cands)
+    assert a.value == 77.26 and info["p"] == 0.7
+    weak_only = [g1(5, oov=["x"]), _q("G3_rewrite", "number", 5, "units", conflict="x")]
+    assert sel().select(weak_only)[0].type == "abstain"     # two weak votes are still no answer
+
+
+def test_zero_unrecorded_hour_and_count_guards():
+    from datamate.select.form_guard import apply_guards
+
+    def flag(q, c):
+        apply_guards(q, [c])
+        return c.answer.meta.get("conflict") or ""
+
+    assert "zero result" in flag("Trong tháng 1/2026, bao nhiêu xe Air Blade khác nhau vào tiệm?",
+                                 _q("G4_base", "number", 0))
+    assert not flag("7 ngày gần nhất, cửa hàng có mấy mặt hàng ế hẳn, ko ai mua cái nào?", _q("G4_base", "number", 0))
+    assert not flag("So số đĩa bán ra 7 ngày sau ngày tăng giá với 7 ngày trước, tăng hay giảm bao nhiêu %?",
+                    _q("G4_base", "percent", 0.0))
+    assert not flag("Trong tháng 1/2026, bao nhiêu xe Air Blade khác nhau vào tiệm?", g1(0))   # rule answers untouched
+    assert "quality not recorded" in flag("Trong tháng 11/2025, sản phẩm nào ngon nhất?",
+                                          _q("G4_alias", "string", "Rau muống xào tỏi"))
+    assert not flag("Trong tháng 11/2025, sản phẩm nào ngon nhất?", _q("G2_frame", "unanswerable", None, "unanswerable"))
+    assert not flag("Dép nào bán chạy nhất tháng 5?", _q("G4_alias", "string", "Dép tổ ong"))
+    assert "hour asked" in flag("Tiệm mình thường đông khách nhất dào mấy giờ z?", _q("G2_frame", "date", "2026-05-02",
+                                                                                     "best_day"))
+    q = "Th3/2026 trung bình mỗi thứ Tư tiệm xửa mấy nượt xe?"
+    assert "count asked" in flag(q, _q("G3_rewrite", "number", 200916, "aov"))
+    assert not flag(q, _q("G3_rewrite", "number", 15, "repair_job_count"))
+
+
+def test_solo_reliability_caps_the_llm_only_where_the_rule_is_unsure():
+    s = sel()
+    s.rel = dict(REL, G2_frame=dict(REL["G2_frame"], __solo__=0.55))
+    assert sel().select([llm("G2_frame", 7)])[0].value == 7                # never measured: no cap (old files)
+    assert s.select([llm("G2_frame", 7)])[0].type == "abstain"             # measured 0.55 alone: below tau
+    assert s.select([g1(5, oov=["x"]), llm("G2_frame", 7)])[0].type == "abstain"
+    assert s.select([g1(7), llm("G2_frame", 7)])[0].value == 7             # clean rule answer: no cap needed
+
+
+def test_fit_measures_solo_reliability_where_g1_is_unsure():
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    import validate
+    ref = lambda i, v: {"id": i, "type": "number", "answer": v, "alias": []}       # noqa: E731
+    recs = [  # q0: clean G1, G2 and G4 agree; q1: G1 silent, G2 wrong, G4 right; q2: G1 flagged, G3 right
+        {"id": "q0", "ref": ref("q0", 1), "cands": [g1(1), llm("G2_frame", 1), _q("G4_base", "number", 1)]},
+        {"id": "q1", "ref": ref("q1", 2), "cands": [llm("G2_frame", 9), _q("G4_base", "number", 2)]},
+        {"id": "q2", "ref": ref("q2", 3), "cands": [g1(3, oov=["x"]), llm("G3_rewrite", 3)]},
+    ]
+    rel = validate.fit(recs)
+    assert rel["G2_frame"]["__solo__"] == round(5 / 11, 4)                 # q1 only (q0 had a clean G1): 0 of 1
+    assert rel["G3_rewrite"]["__solo__"] == round(6 / 11, 4)               # q2: 1 of 1
+    assert rel["G4_base"]["__solo__"] == round(7 / 12, 4)                  # SQL: q0 and q1 both count, 2 of 2
+    assert "__solo__" not in rel["G1_rule"]

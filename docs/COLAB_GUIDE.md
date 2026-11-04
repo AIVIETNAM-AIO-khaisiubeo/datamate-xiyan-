@@ -201,12 +201,13 @@ chạy lại 7b: ô 7c áp chúng lên log của 7b.
 
 1. Mở notebook từ link GitHub, chọn runtime **CPU**.
 2. Chạy ô 1, mục 2 (mount Drive, clone, kiểm tra), mục 3 (cài thư viện; vLLM tự bỏ qua trên CPU).
-3. Mục 6:
-   - ô chạy: chỉ chạy lại `noisy_rule`; các lần chạy LLM được giữ;
-   - **ô validate**: tính lại `reliability_phaseA.json`, giờ có thêm độ tin cậy của LLM khi nó phản đối G1;
-   - bảng kết quả;
-   - (tuỳ chọn) hai ô "khả năng tổng quát".
-4. Mục 7: bỏ qua 7a. Ô 7b in "Đã có lần chạy 7b … giữ nguyên". Chạy **7c**.
+3. Mục 6: không bắt buộc. Ô 7c tự đo lại reliability trên log `eval_phaseA/noisy_lora/logs` bằng code hiện tại (kể cả
+   độ tin cậy của LLM khi nó phản đối G1 và khi G1 không chắc). Hai ô "khả năng tổng quát" vẫn chạy được nếu muốn xem.
+4. Mục 7: bỏ qua 7a. Ô 7b in "Đã có lần chạy 7b … giữ nguyên". Chạy ô so sánh, rồi **7c**. 7c in:
+   - bảng generator và hai khoá `solo` / `dissent` của mỗi generator LLM;
+   - số câu khác bản rule-only;
+   - số câu khác bản cuối lần trước (`submission_prev.jsonl`);
+   - mã sha256.
 5. Tải `MyDrive/datamate/public_phaseA_final/submission.jsonl` từ Drive. Kiểm tra mã sha256 trùng với dòng `sha256:`
    mà 7c in ra (Windows: `certutil -hashfile submission.jsonl SHA256`), rồi nộp file đó.
 6. Mục 8 đẩy file lên GitHub với tên `public_test_lora_phasea_final_<8 ký tự sha>.jsonl`.

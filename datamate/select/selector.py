@@ -24,6 +24,15 @@ overriding correct rule answers:
 * an ``unanswerable`` claim made only by the LLM is not eligible while G1 has a value answer;
 * a group supported only by SQL needs ``min_sql_support`` executions (distinct SQL texts or prompts) that
   return the same value (XiYan's execution consistency); a single SQL gives no positive vote.
+
+Two more after the 0.909 run (both measured on the logs of that run, without labels):
+
+* agreement never counts against an answer: the group's strongest family gives its own logit, every other family
+  that agrees can only add (``max(0, logit r)``).  A flagged LLM route (reliability capped at 0.3) that reproduced
+  the rule answer used to subtract from it: five correct G1 answers fell from p 0.7 to 0.5 and were withheld;
+* G1 unsure (no anchor): an LLM vote is capped by the reliability of that generator measured on held-out questions
+  where G1 had no clean answer (key ``__solo__``, validate.py, prior 0.5).  Its overall reliability is measured
+  mostly where it agrees with G1 (0.98 for G2/G3) and was over-optimistic where G1 is silent (about 50 % on public).
 """
 from __future__ import annotations
 
@@ -92,6 +101,7 @@ def is_clean_rule(c: Candidate, trusted=None, anchor_gens=("G1_rule",)) -> bool:
 
 
 DISSENT_KEY = "__dissent__"      # reliability of a generator when it disagrees with a clean rule answer
+SOLO_KEY = "__solo__"            # reliability of a generator on questions where no clean rule answer exists
 
 
 def _sql_support(members: List[Candidate]) -> int:
@@ -131,14 +141,22 @@ class Selector:
         only pushes the rule answer towards abstention when the LLM is right more often than wrong there."""
         return min(self._r_eff(c, trusted), self.rel.get(c.gen, {}).get(DISSENT_KEY, 0.5))
 
-    def _family_votes(self, members: List[Candidate], trusted=None) -> Dict[str, float]:
+    def _r_solo(self, c: Candidate, trusted=None) -> float:
+        """Weight of an LLM candidate on a question without a clean rule answer: capped by the reliability measured
+        on such questions of held-out shops (key __solo__); not capped when that was never measured."""
+        r = self._r_eff(c, trusted)
+        solo = self.rel.get(c.gen, {}).get(SOLO_KEY)
+        return min(r, solo) if solo is not None and is_llm_gen(c.gen) else r
+
+    def _family_votes(self, members: List[Candidate], trusted=None, solo: bool = False) -> Dict[str, float]:
         """family -> reliability of its vote for this group (its most reliable member speaks for it)."""
         out: Dict[str, float] = {}
         by_fam: Dict[str, List[Candidate]] = defaultdict(list)
+        r_of = self._r_solo if solo else self._r_eff
         for c in members:
             by_fam[self._fam(c)].append(c)
         for f, cs in by_fam.items():
-            r = max(self._r_eff(c, trusted) for c in cs)
+            r = max(r_of(c, trusted) for c in cs)
             if self.min_sql_support and all("sql" in c.detail for c in cs) and _sql_support(cs) < self.min_sql_support:
                 r = min(r, 0.5)                    # one SQL execution alone: no positive vote
             out[f] = r
@@ -160,8 +178,9 @@ class Selector:
         groups: Dict[str, List[Candidate]] = defaultdict(list)
         for c in votes:
             groups[c.answer.key()].append(c)
-        votes_by_group = {key: self._family_votes(members, trusted) for key, members in groups.items()}
         anchor = self._anchor(votes, trusted)
+        solo = anchor is None and not self.legacy
+        votes_by_group = {key: self._family_votes(members, trusted, solo) for key, members in groups.items()}
         rule_value = any(c.gen in self.anchor_gens and c.answer.type != "unanswerable" for c in votes)
         info = {"groups": []}
         if anchor is not None:
@@ -169,7 +188,11 @@ class Selector:
         best, best_p = None, -1.0
         for key, members in groups.items():
             fams = votes_by_group[key]
-            s = sum(logit(r) for r in fams.values())
+            if self.legacy:
+                s = sum(logit(r) for r in fams.values())
+            else:                                         # agreeing families only add: the strongest speaks first
+                ls = sorted((logit(r) for r in fams.values()), reverse=True)
+                s = ls[0] + sum(max(0.0, x) for x in ls[1:])
             # every other family that voted for a different answer counts against this group (once, its strongest vote)
             dissent: Dict[str, float] = {}
             anchored = anchor is not None and key == anchor.answer.key()
