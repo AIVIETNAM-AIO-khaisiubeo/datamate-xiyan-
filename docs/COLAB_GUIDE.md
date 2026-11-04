@@ -1,7 +1,10 @@
 # Fine-tune trên Google Colab Pro và lưu kết quả về GitHub
 
+> **Lưu ý phiên bản:** Link Colab mở notebook trên `main`. Các đoạn hướng dẫn bên dưới ghi cả các bước debugging lịch sử; không xem chúng là trạng thái hiện tại của mọi lần chạy. Đọc [EXPERIMENTS.md](EXPERIMENTS.md) để phân biệt số đo local fold và điểm nộp chính thức.
+
+
 Notebook: [`notebooks/colab_finetune.ipynb`](../notebooks/colab_finetune.ipynb). Mở thẳng trên Colab:
-`https://colab.research.google.com/github/AIVIETNAM-AIO-khaisiubeo/datamate-xiyan-/blob/gpu-finetune-guide/notebooks/colab_finetune.ipynb`
+`https://colab.research.google.com/github/AIVIETNAM-AIO-khaisiubeo/datamate-xiyan-/blob/main/notebooks/colab_finetune.ipynb`
 
 Notebook làm đúng quy trình hai pha của [`GPU_FINETUNE_GUIDE.md`](GPU_FINETUNE_GUIDE.md), Phần F, nhưng đã chỉnh cho
 Colab: chọn QLoRA hay LoRA theo GPU, lưu checkpoint lên Drive, train tiếp khi mất kết nối, và cuối cùng đẩy kết quả
@@ -48,7 +51,7 @@ Chạy các ô **theo thứ tự từ trên xuống**:
 | 5 | Smoke test 1 phút, rồi train + xuất adapter bf16 | lâu nhất: khoảng 5 giờ trên A100 với 1500 ví dụ/nhiệm vụ (đã đo: 822 bước) |
 | 6 | **Restart session**, rồi đánh giá rule / base / lora trên **bản nhiễu** của 6 shop giữ riêng, hiệu chuẩn | in bảng PA cả hệ thống và PA LLM-only; khoảng 1–2 giờ |
 | 7 | Tạo `submission.jsonl` cho public test bằng model fine-tune, rồi so với bản rule-only | tự tạo lại khi reliability đổi; kiểm tra định dạng tự động |
-| 8 | Đẩy adapter, reliability, file nộp lên nhánh `colab-finetune-phasea` | kiểm tra adapter đi qua LFS trước khi đẩy, kiểm tra nhánh đã có trên GitHub sau khi đẩy; in `XONG: <link>` |
+| 8 | Đẩy adapter, reliability, file nộp lên nhánh `colab-results` (ghi đè lần trước) và một tag `run-<ngày giờ>` | kiểm tra adapter đi qua LFS trước khi đẩy, kiểm tra nhánh và tag đã có trên GitHub sau khi đẩy; in `XONG: <link>` |
 | 9 | (Tuỳ chọn) Merge và publish lên Hugging Face Hub | cần `HF_TOKEN`, khoảng 60 GB đĩa |
 
 **Khi bị ngắt kết nối** (thường gặp với job dài): máy ảo mới không còn thư viện và model, nhưng Drive vẫn giữ checkpoint
@@ -100,12 +103,12 @@ public, và private sẽ khác.
 
 ## 5. Sau khi notebook đẩy lên GitHub
 
-1. Trên GitHub, mở nhánh `colab-finetune-phasea` (hoặc `…phaseb`). Xem `models/adapter/TRAINING.md` và PA, rồi tạo
-   pull request vào `main` nếu muốn giữ.
+1. Trên GitHub, mở nhánh `colab-results` (luôn là lần chạy mới nhất; các lần trước nằm ở tag `run-…`). Xem
+   `models/adapter/TRAINING.md` và PA, rồi tạo pull request vào `main` nếu muốn giữ.
 2. Trên máy của bạn:
 
    ```bash
-   git fetch origin && git checkout colab-finetune-phasea
+   git fetch origin && git checkout colab-results
    git lfs install && git lfs pull          # tải weights thật, không phải file con trỏ LFS
    ```
 
@@ -122,7 +125,7 @@ public, và private sẽ khác.
 Adapter, dữ liệu và log đánh giá đều nằm trên Drive (`MyDrive/datamate`), nên không phải train lại.
 
 1. Mở lại notebook từ link ở đầu trang, để có bản mới nhất. Bản cũ đã lưu trong Drive của bạn vẫn là bản cũ.
-2. Chạy ô 1, các ô của mục 2 (ô clone giờ cài git-lfs, rồi đặt repo về đúng `origin/gpu-finetune-guide`; commit hỏng
+2. Chạy ô 1, các ô của mục 2 (ô clone giờ cài git-lfs, rồi đặt repo về đúng `origin/main`; commit hỏng
    của lần trước bị bỏ), và mục 3. Ô tải model tự bỏ qua nếu model còn trên máy.
 3. **Bỏ qua mục 4 và 5**: dữ liệu và adapter đã có trên Drive.
 4. Chạy mục 6. Bản nhiễu được tạo mới, và rule / base / lora được chạy lại với G4 trên mọi câu. Các lần chạy cũ trên câu
@@ -131,7 +134,7 @@ Adapter, dữ liệu và log đánh giá đều nằm trên Drive (`MyDrive/data
 5. Chạy mục 7. File nộp cũ được tạo với reliability thiếu G1, nên nó được chuyển sang `public_phaseA_prev` và file mới
    được tạo lại.
 6. Chạy mục 8. Ô phải in `đã kiểm tra: ... adapter đi qua Git LFS`, rồi `Uploading LFS objects: 100% (1/1), ...` (khoảng 250 MB), và
-   cuối cùng là `XONG: https://github.com/.../tree/colab-finetune-phasea`. Nếu không thấy dòng `XONG`, ô đã dừng
+   cuối cùng là `XONG: https://github.com/.../tree/colab-results`. Nếu không thấy dòng `XONG`, ô đã dừng
    ở một bước kèm thông báo lỗi.
 
 ## 6b. Sau lần nộp 0,777 (bản LoRA thấp hơn bản rule-only)
@@ -191,7 +194,7 @@ Lưu ý khi chạy trên T4:
    các file trọng số.
 2. Notebook không thấy adapter, cũng không thấy log của các lần chạy trước. Drive đang mount không phải Drive của lần
    chạy A100: hoặc ô mount chưa chạy, hoặc đây là tài khoản Google khác. Ô mount giờ kiểm tra Drive đã thật sự được
-   nối. Ô sau ô clone liệt kê những gì đang thiếu, và tự lấy adapter từ nhánh `colab-finetune-phasea` trên GitHub
+   nối. Ô sau ô clone liệt kê những gì đang thiếu, và tự lấy adapter từ `main` trên GitHub
    (khoảng 0,26 GB băng thông Git LFS). Log của lần nộp 0,777 (cho ô 7a) chỉ có trên Drive cũ: ô đó chỉ ra cách lấy.
 
 ## 6d. Bản cuối để nộp (7c) — chỉ cần CPU

@@ -57,13 +57,13 @@ md("## 1. Cấu hình")
 code("""
 # ---- chỉnh ở đây ----------------------------------------------------------------
 REPO_URL = "https://github.com/AIVIETNAM-AIO-khaisiubeo/datamate-xiyan-.git"
-BRANCH = "gpu-finetune-guide"      # nhánh có code fine-tune
+BRANCH = "main"                    # nhánh có code (main chứa mọi thứ: code, tài liệu, adapter, file nộp)
 PHASE = "A"                        # "A": giữ riêng fold 0 để đo; "B": train trên cả 30 shop (bản cuối)
 HOLDOUT_FOLD = 0
 MAX_PER_TASK = 1500                # A: thử nhanh (1500); B: 6000 nếu đủ thời gian
 EPOCHS = 1
 LR = 1e-4
-OUT_BRANCH = f"colab-finetune-phase{PHASE.lower()}"   # nhánh GitHub nhận kết quả (không đẩy thẳng lên main)
+OUT_BRANCH = "colab-results"      # nhánh GitHub nhận kết quả (không đẩy thẳng lên main); mỗi lần chạy thêm một tag run-…
 AWQ_REPO = "Qwen/Qwen3-14B-AWQ"    # T4: bản lượng tử 4-bit chính thức của Qwen3-14B (cùng kiến trúc, cùng 14,8B tham số)
 T4_G4_MAX = 20                     # T4: số câu mỗi shop chạy G4 khi đánh giá (A100: mọi câu); G4 là phần chậm nhất
 T4_RUN_BASE = False                # T4: có chạy lại model gốc (không adapter) ở mục 6 không; thêm 2-3 giờ
@@ -150,6 +150,9 @@ code("""
 # Colab KHÔNG có sẵn git-lfs. Thiếu nó, adapter 0,26 GB bị commit như file thường và GitHub từ chối (giới hạn 100 MB).
 !command -v git-lfs >/dev/null || (apt-get -qq update && apt-get -qq install -y git-lfs >/dev/null)
 !git lfs version
+# Không tự tải nội dung Git LFS khi clone / checkout: adapter 0,26 GB trên main chỉ được tải khi Drive chưa có
+# (ô sau), vì gói miễn phí của GitHub chỉ có 1 GB băng thông LFS mỗi tháng.
+os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"
 if not os.path.isdir(REPO):
     !git clone --branch {BRANCH} {REPO_URL} {REPO}
 else:
@@ -160,7 +163,7 @@ else:
 """)
 code("""
 # Những gì các mục sau cần, và đã có trên Drive chưa
-ADAPTER_SRC_BRANCH = "colab-finetune-phasea"     # nhánh GitHub mà lần chạy A100 đã đẩy adapter lên (Git LFS)
+ADAPTER_SRC_BRANCH = "main"     # adapter pha A nằm trên main (Git LFS); trước đây ở nhánh colab-finetune-phasea, nay là tag run-0.777
 def adapter_ok():
     f = f"{ADAPTER}/adapter_model.safetensors"
     return os.path.exists(f"{ADAPTER}/adapter_config.json") and os.path.exists(f) and os.path.getsize(f) > 1_000_000
@@ -185,7 +188,8 @@ if not adapter_ok() and PROFILE != "cpu":
         dst = f"{ADAPTER}/{os.path.basename(p)}"
         with open(dst + ".part", "wb") as fo:
             if blob.startswith(b"version https://git-lfs"):     # con trỏ LFS: tải nội dung thật
-                subprocess.run(["git", "-C", REPO, "lfs", "smudge", p], input=blob, stdout=fo, check=True)
+                fetch_env = {k: v for k, v in os.environ.items() if k != "GIT_LFS_SKIP_SMUDGE"}   # tải thật ở đây
+                subprocess.run(["git", "-C", REPO, "lfs", "smudge", p], input=blob, stdout=fo, check=True, env=fetch_env)
             else:
                 fo.write(blob)
         os.replace(dst + ".part", dst)
@@ -616,16 +620,16 @@ print("Trên Drive: MyDrive/datamate/public_phaseA_final/submission.jsonl. Sau k
 """)
 
 md("""
-## 8. Lưu về GitHub (nhánh mới, adapter qua Git LFS)
+## 8. Lưu về GitHub (nhánh `colab-results` + một tag cho lần chạy, adapter qua Git LFS)
 
-Đẩy lên **nhánh `OUT_BRANCH`**, không phải `main`. Bạn tự xem lại rồi merge trên GitHub. Token đọc từ Colab Secrets
+Đẩy lên **nhánh `OUT_BRANCH`** (`colab-results`), không phải `main`. Bạn tự xem lại rồi merge trên GitHub. Token đọc từ Colab Secrets
 và không bao giờ in ra màn hình. Mỗi lần đẩy dùng khoảng 0,26 GB dung lượng Git LFS (gói miễn phí của GitHub: 1 GB
 lưu trữ và 1 GB băng thông mỗi tháng).
 
 Ô này dừng lại kèm thông báo lỗi nếu có bước nào hỏng. Nó kiểm tra adapter **thật sự** đi qua Git LFS trước khi đẩy,
-và sau khi đẩy thì kiểm tra nhánh đã có trên GitHub. Nhánh luôn được tạo lại từ `origin/BRANCH`, nên commit hỏng của
-lần trước (adapter commit như file thường, bị GitHub từ chối) bị bỏ đi. Nếu `OUT_BRANCH` đã có trên GitHub, kết quả
-được đẩy lên một nhánh mới có thêm ngày giờ, không ghi đè nhánh cũ.
+và sau khi đẩy thì kiểm tra nhánh và tag đã có trên GitHub. Commit kết quả luôn nằm ngay trên `origin/BRANCH` (`main`),
+nên commit hỏng của lần trước bị bỏ đi. `colab-results` luôn là lần chạy **mới nhất** (ghi đè lần trước); mỗi lần
+chạy còn được giữ ở một tag `run-<ngày giờ>`, nên không lần nào bị mất và danh sách nhánh không dài thêm.
 
 Repo hiện ở chế độ **public**: đọc lại luật cuộc thi về việc công bố dữ liệu và weights học từ dữ liệu trước khi đẩy.
 """)
@@ -651,13 +655,11 @@ def git(*args, quiet=False, check=True):
         raise RuntimeError(f"git {args[0]} lỗi (mã {r.returncode}), xem thông báo ở trên")
     return r
 
-# 1. nhánh sạch từ origin/BRANCH; không ghi đè một nhánh kết quả đã có trên GitHub
+# 1. nhánh sạch từ origin/BRANCH; lần chạy trước vẫn còn ở tag của nó
 git("lfs", "install", "--local", quiet=True)
 git("fetch", "-q", "origin")
 out_branch = OUT_BRANCH
-if git("ls-remote", "--heads", "origin", out_branch, quiet=True).stdout.strip():
-    out_branch = f"{OUT_BRANCH}-{datetime.datetime.now():%Y%m%d-%H%M}"
-    print(f"{OUT_BRANCH} đã có trên GitHub, đẩy lên nhánh mới {out_branch}")
+run_tag = f"run-{datetime.datetime.now():%Y%m%d-%H%M}"
 git("checkout", "-q", "-f", "-B", out_branch, f"origin/{BRANCH}")
 
 # 2. kết quả: adapter, reliability, file nộp, ghi chú huấn luyện
@@ -713,10 +715,13 @@ print("đã kiểm tra:", len(staged), "file; adapter đi qua Git LFS")
 if git("diff", "--cached", "--quiet", quiet=True, check=False).returncode:
     git("commit", "-q", "-m", f"Colab fine-tune phase {PHASE}: LoRA adapter, reliability, public submission")
 git("lfs", "ls-files")
-git("push", "origin", f"HEAD:refs/heads/{out_branch}")
+git("tag", "-f", run_tag)
+git("push", "--force", "origin", f"HEAD:refs/heads/{out_branch}")      # ghi đè lần trước: nó còn ở tag của nó
+git("push", "origin", f"refs/tags/{run_tag}")
 assert git("ls-remote", "--heads", "origin", out_branch, quiet=True).stdout.strip(), "Push chưa tới GitHub"
+assert git("ls-remote", "--tags", "origin", run_tag, quiet=True).stdout.strip(), "Tag chưa tới GitHub"
 web = REPO_URL[:-4] if REPO_URL.endswith(".git") else REPO_URL
-print(f"XONG: {web}/tree/{out_branch}")
+print(f"XONG: {web}/tree/{out_branch}  (tag {run_tag}: {web}/tree/{run_tag})")
 """)
 
 md("""

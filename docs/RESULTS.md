@@ -1,9 +1,29 @@
-# Kết quả đo được (chế độ CPU, chỉ generator luật G1 + bộ chọn)
+# Nhật ký kết quả DataMate-XiYan — CPU baseline, GPU Phase A và leaderboard
 
-Môi trường phát triển: Windows, CPU 16 luồng, **không GPU** ⇒ các generator LLM (G2–G4) chỉ được kiểm thử
-bằng LLM giả lập (`tests/test_agent_mock.py`), chưa đo độ chính xác. Mọi số dưới đây là của
-`python -m datamate.predict --llm none`.
+> **Historical research log — 2026-11-04.** This file preserves the chronology of CPU baselines, public-leaderboard submissions, GPU experiments and debugging. It is **not** a single up-to-date configuration report. For a comparison between official public scores, in-sample results, Phase-A held-out evaluation and unverified results, read [EXPERIMENTS.md](EXPERIMENTS.md). For the implementation see [ARCHITECTURE.md](ARCHITECTURE.md) and [XIYAN_ADAPTATION.md](XIYAN_ADAPTATION.md).
+>
+> **Known provenance limitation:** `models/adapter/TRAINING.md` contains a contradictory auto-generated "GPU CPU" line; keep the original model-run logs when claiming hardware settings. Public scores refer to **specific uploaded files/older versions**, not any new `final`-named artifact by default.
 
+
+**Lịch sử thử nghiệm:** các mục §1 và §5 là số đo CPU / trong mẫu; mục §2 ghi các lượt nộp public thực tế,
+bao gồm các lần chạy với Qwen3-14B / LoRA pha A. Không gộp các số này thành kết quả của một phiên bản duy nhất.
+Các kiểm thử mock LLM không thay thế cho phép đo GPU. Ngoài ra, xem
+[EXPERIMENTS.md](EXPERIMENTS.md) để hiểu giới hạn suy luận từ điểm leaderboard.
+
+## 1. Train (3.000 câu, 30 shop) — có đáp án
+
+| Chế độ | Đúng | Sai | Bỏ trống | PA | Thời gian |
+|---|---:|---:|---:|---:|---:|
+| Agent đầy đủ (G1 + coverage + selector) | 3.000 | 0 | 0 | **1.000** | ~4 phút (gồm nạp 30 shop từ cache) |
+| Câu hỏi train **bị làm nhiễu** kiểu public (`scripts/eval_noise.py`, mức 0.7) | 2.990 | 0 | 10 | **0.997** | |
+
+> **Đọc đúng con số:** PA = 1.000 là **trong mẫu** — luật được viết trong lúc phân tích lỗi trên chính các câu
+> train này (không mã hoá đáp án hay id; mọi xử lý suy ra từ file + README + rulebook). Bản nhiễu (bỏ dấu, gõ
+> Telex sai, viết tắt, phương ngữ, ngày viết tắt "Th7/25"…) ước lượng hành vi trên câu hỏi lộn xộn: **0 câu sai**,
+> 0.3 % bỏ trống. Lưu ý: bộ sinh nhiễu và bộ chuẩn hoá dùng chung hiểu biết về viết tắt nên con số này lạc quan;
+> câu hỏi public/private còn nhiều kiểu nhiễu và khái niệm mới hơn (xem §2).
+
+Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 0.972 → 0.998 → 1.000.
 
 ### Phân bố intent mà G1 nhận diện trên train
 
@@ -23,7 +43,7 @@ bằng LLM giả lập (`tests/test_agent_mock.py`), chưa đo độ chính xác
 | price_effect | 84 | | |
 | avg_purchase_price | 63 | | |
 
-## Public test (1.000 câu, 14 shop) 
+## 2. Public test (1.000 câu, 14 shop) — **không có đáp án**
 
 ### Lịch sử nộp leaderboard
 
@@ -31,9 +51,12 @@ bằng LLM giả lập (`tests/test_agent_mock.py`), chưa đo độ chính xác
 |---|---|---:|
 | 1 | G1 rule-only | 0.561 |
 | 2 | G1 rule-only sau phân tích lỗi public không nhãn (`submissions/public_test_rule_only.jsonl`) | **0.912** |
-| 3 | G1 + Qwen3-14B + LoRA pha A (`colab-finetune-phasea`) | **0.777** |
-| 4 | G1 + Qwen3-14B-AWQ + LoRA pha A trên T4, bộ chọn mới, G4 đã sửa (ô 7b; nhánh `colab-finetune-phasea-20261104-1350`, `submissions/public_test_lora_phasea.jsonl`, sha256 `8124e92b…`) | **0.895** |
-| 5 | Bản cuối: bộ chọn có hiệu chuẩn sự phản đối + kiểm tra hình thức + chốt rulebook, replay trên log của bản 4 (ô 7c, chỉ CPU; nhánh `colab-finetune-phasea-20261104-1534`, `submissions/public_test_lora_phasea_final_de716e81.jsonl`, sha256 `de716e81…`) | **0.909** |
+| 3 | G1 + Qwen3-14B + LoRA pha A (tag `run-0.777`, `submissions/public_test_lora_phasea_old_selector_8f3c7d3b.jsonl`) | **0.777** |
+| 4 | G1 + Qwen3-14B-AWQ + LoRA pha A trên T4, bộ chọn mới, G4 đã sửa (ô 7b; tag `run-0.895`, `submissions/public_test_lora_phasea_7b_8124e92b.jsonl`) | **0.895** |
+| 5 | Bản cuối: bộ chọn có hiệu chuẩn sự phản đối + kiểm tra hình thức + chốt rulebook, replay trên log của bản 4 (ô 7c, chỉ CPU; tag `run-0.909`, `submissions/public_test_lora_phasea_final_de716e81.jsonl`) | **0.909** |
+
+Các tag `run-…` thay cho các nhánh `colab-finetune-phasea…` cũ: mỗi tag là đúng commit Colab đã tạo ra file được nộp.
+Bảng file → điểm: [`submissions/README.md`](../submissions/README.md).
 
 Bản 2 cao một phần vì luật G1 được viết sau khi đọc câu hỏi và dữ liệu public (không nhãn). Đó là luật chung, nhưng
 được chọn bằng cách nhìn public, nên 0.912 lạc quan so với private.
@@ -63,7 +86,7 @@ Cộng lại bằng −17, nên *a* = *c* + 7. Bản 2 đúng khoảng 98% số 
   train. Hiệu chuẩn của LLM ở những câu G1 không chắc đang quá lạc quan. Đây là điểm cần sửa tiếp theo, và quan trọng cho
   private, nơi G1 sẽ không chắc ở nhiều câu hơn.
 
-Phân tích này giả định file được nộp là file 7b của nhánh `colab-finetune-phasea-20261104-1350` (sha256 `8124e92b…`).
+Phân tích này giả định file được nộp là file 7b của tag `run-0.895` (sha256 `8124e92b…`).
 Nếu là file `_replay` (sha256 `28e7e73c…`; 47 câu mới trả lời, 18 câu mới bỏ trống), kết luận gần như không đổi.
 
 **Bản 5 (7c, bản cuối, chỉ CPU trên log của bản 4).** Thêm ba chốt chặn, đều là luật chung và đều được kiểm trên
