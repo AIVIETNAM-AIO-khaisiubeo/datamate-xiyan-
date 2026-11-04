@@ -57,6 +57,22 @@ Bản 3 kém bản 2 135 điểm (trên 1.000) và khác bản 2 ở 116 câu. M
 LLM không thay đáp án số) và trong `extract_sql`. Hai bản tiếp theo: replay bộ chọn mới trên log của bản 3 (chỉ CPU), rồi
 chạy lại toàn bộ với G4 đã sửa.
 
+**Bản 4 (7b, T4, bộ chọn mới + G4 đã sửa).** So với bản 2: 0 câu bị thay, 49 câu mới trả lời, 18 câu chuyển sang bỏ
+trống. Vì giống bản 2 ở 933/1000 câu, điểm của nó chỉ có thể nằm trong khoảng 0.845–0.979. Lần nộp báo 0.777000, đúng
+bằng điểm bản 3, nên file được nộp nhiều khả năng là bản 3: file bản 3 và file bản 4 đã tải về có tên gần như trùng
+nhau. Bản 4 chưa có điểm thật.
+
+**Bản 5 (7c, bản cuối, chỉ CPU trên log của bản 4).** Thêm ba chốt chặn, đều là luật chung và đều được kiểm trên
+train:
+- **Sự phản đối của LLM được hiệu chuẩn** (`__dissent__`). Độ tin cậy của LLM khi nó trái ý một đáp án G1 không bị
+  đánh dấu được đo trên shop giữ riêng. Theo quy tắc Chow, LLM chỉ đẩy G1 về bỏ trống khi, ở những câu đó, LLM đúng
+  nhiều hơn sai. Mặc định 0,5 nghĩa là không phủ quyết. (Ở bản 4, 18 câu bị bỏ trống chỉ vì LLM trái ý.)
+- **Kiểm tra hình thức câu hỏi cho mọi ứng viên LLM**, so với câu hỏi gốc, không so với câu LLM đã viết lại. G4 trước
+  đây không được kiểm tra gì.
+- **Dòng rulebook mà engine chưa biết.** Các dòng của train và public được ghi vào `artifacts/known_rulebook_rows.json`.
+  Ở private, câu hỏi nhắc tới một dòng mới thì G1, G2, G3 bị đánh dấu, và chỉ SQL kèm chính dòng đó (làm evidence) được
+  trả lời. Trên train và public, chốt này không đổi gì.
+
 | | Bản nộp 1 (điểm BTC **0.561**) | Bản 2 (hiện tại) |
 |---|---:|---:|
 | Trả lời giá trị | 850 | 920 |

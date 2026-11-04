@@ -204,11 +204,15 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 | Split / phiên bản | Đáp án giá trị | `unanswerable` | `abstain` | PA |
 |---|---:|---:|---:|---:|
 | Public test, submission 1 (1.000 câu) | 850 | 21 | 129 | **0.561** (điểm BTC) |
-| Public test, phiên bản 2 | 920 | 22 | 58 | **Chưa chấm** |
+| Public test, phiên bản 2 (rule-only, sau phân tích lỗi public không nhãn) | 920 | 22 | 58 | **0.912** (điểm BTC) |
+| Public test, G1 + Qwen3-14B + LoRA, bộ chọn cũ | 901 | 74 | 25 | **0.777** (điểm BTC) |
 
 - **Train:** 3.000 đúng, 0 sai, 0 abstain. Đây là kết quả **trong mẫu**, do luật được phát triển khi phân tích train; **không** phải phép đo generalization độc lập.
 - **Public bản 1:** PA 0.561 do leaderboard cung cấp; số câu đúng/sai không được gắn nhãn trong public test.
-- **Public bản 2:** số câu trả lời và bỏ trống là thống kê inference. **Chưa có điểm PA xác nhận**, vì không có ground-truth public.
+- **Public bản 2:** 0.912. Luật G1 của bản này được viết sau khi đọc câu hỏi và dữ liệu public (không nhãn), nên điểm
+  này lạc quan so với private.
+- **Public, có LLM, bộ chọn cũ:** 0.777. LLM thay 73 đáp án đúng của G1 và đổi 46 đáp án thành `unanswerable`. Bộ chọn
+  hiện tại sửa điều này (xem [`docs/RESULTS.md`](docs/RESULTS.md) §2).
 
 Chi tiết breakdown theo intent, thay đổi giữa hai bản và phân tích lỗi nằm trong [báo cáo kết quả](docs/RESULTS.md). File kết quả CPU được lưu tại [`submissions/public_test_rule_only.jsonl`](submissions/public_test_rule_only.jsonl).
 
@@ -538,13 +542,28 @@ python -c "import json;a=[json.loads(l) for l in open('submissions/public_test_r
 
 ## 10. Giới hạn và hướng phát triển
 
-1. **Generalization:** train đạt 1.000 nhưng đó là kết quả trong mẫu; public bản 1 đạt 0.561. Các cách diễn đạt mới, bảng có schema lạ và business chưa gặp vẫn là thách thức.
-2. **LLM chưa được benchmark:** G2/G3 và pipeline XiYan của G4 (keyword/chọn cột bằng LLM, sinh SQL, self-refine, selection model) mới chạy với mock LLM. Cần chạy inference thật với Qwen3-14B, rồi ablation trên validation theo business: `G1` → `+G2/G3` → `+G4 full schema` → `+S1/S2` → `+3 định dạng` → `+selection model`. Chỉ giữ thành phần nào làm PA tăng: thêm thành phần không tự động làm hệ thống chính xác hơn.
-3. **Đa dạng generator:** 3 định dạng SQL hiện là prompt của một model, nên chưa tương đương các generator fine-tune riêng của paper. Bước tiếp: train một model đa nhiệm, đa định dạng bằng `training/build_sql_sft.py` (vẫn 14,8B), rồi mới tính đến LoRA riêng cho từng định dạng nếu ngân sách tham số cho phép.
-4. **Training GPU còn thử nghiệm:** SFT (LoRA BF16 hoặc `--qlora`) và GRPO chưa được chạy thật, chưa có số liệu. Quy trình hai pha có fold giữ riêng nằm trong `docs/GPU_FINETUNE_GUIDE.md`, Phần F.
-5. **Calibration:** reliability của G4 và G_select hiện là giá trị mặc định (0,55–0,60). Cần hiệu chuẩn bằng `scripts/validate.py --write-reliability` trên log GPU của train. Hiệu chuẩn của G1 lấy từ train và có thể quá lạc quan.
-6. **Schema Filter không LLM** dùng TF-IDF + bảng thuật ngữ viết khi đọc train, nên với shop có cột lạ, recall có thể thấp hơn §4.2. Schema đầy đủ luôn được giữ làm baseline.
-7. **Rulebook drift và độ an toàn SQL:** thay đổi luật trong split khác có thể khiến engine không còn đúng. G4 chỉ chạy trên các view đã chuẩn hoá, DuckDB chỉ-đọc, có timeout cho mỗi truy vấn.
+Trạng thái của từng giới hạn (cập nhật 2026-11-04):
+
+1. **Generalization:** train 1.000 là trong mẫu. Public 0.561 → 0.912 sau khi viết thêm luật từ phân tích lỗi public
+   (không nhãn), nên 0.912 lạc quan so với private. Đã thêm các phép đo bằng nhãn train cho khái niệm mới
+   (`scripts/leave_intent_out.py`), cho cách trình bày dữ liệu mới (`scripts/perturb_split.py`), cho câu hỏi nhiễu
+   (`scripts/make_noisy_split.py`), và một chốt chặn cho dòng rulebook mà engine chưa biết (`select/form_guard.py`).
+2. **LLM đã chạy thật** (Qwen3-14B trên A100, và bản AWQ trên T4), trên 6 shop giữ riêng. LLM-only PA: model gốc
+   0.947, LoRA 0.982. G4 đúng khoảng 0.70–0.83, G_select kém (đúng 0.26–0.70). Chưa làm ablation từng thành phần.
+   Lần nộp đầu có LLM (0.777) kém bản rule-only vì bộ chọn: G2 và G3 được tính hai phiếu, `unanswerable` thiếu hiệu
+   chuẩn, G4 không đọc được SQL của adapter. Cả ba đã sửa.
+3. **Đa dạng generator:** đã train một adapter đa nhiệm, đa định dạng (`training/build_sql_sft.py`). Ba định dạng
+   SQL vẫn là cùng một model, nên bộ chọn tính chúng là **một** phiếu, và chỉ tin SQL khi ít nhất 2 lần thực thi cho
+   cùng kết quả.
+4. **Training GPU:** SFT QLoRA pha A đã chạy (A100, 822 bước). GRPO và pha B chưa chạy. Trên T4 chỉ suy luận được.
+5. **Calibration:** G2, G3, G4, G_select đã được hiệu chuẩn trên shop giữ riêng (`validate.py --write-reliability`).
+   Khoá `unanswerable` co về 0,5. Độ tin cậy của LLM khi nó **phản đối** một đáp án G1 không bị đánh dấu được đo riêng
+   (`__dissent__`). Hiệu chuẩn G1 vẫn lấy từ train, nên lạc quan.
+6. **Schema Filter không LLM:** chưa đổi. Kiểm tra cách trình bày dữ liệu (`perturb_split.py`) đo ingest, không đo
+   Schema Filter.
+7. **Rulebook drift:** ngoài việc kiểm tra cụm từ khoá, giờ mọi dòng rulebook mà engine chưa từng thấy
+   (`artifacts/known_rulebook_rows.json`) được phát hiện. Câu hỏi nhắc tới các dòng đó chỉ được trả lời bằng SQL, kèm
+   chính dòng đó làm evidence. An toàn SQL: chỉ trên view đã chuẩn hoá, DuckDB chỉ-đọc, có timeout.
 
 ### Nền tảng nghiên cứu
 

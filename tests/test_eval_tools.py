@@ -157,3 +157,63 @@ def test_count_params_fails_on_a_directory_without_weights():
         json.dump({"model_type": "qwen3"}, open(os.path.join(d, "config.json"), "w"))
         r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "count_params.py"), d], capture_output=True, text=True)
         assert r.returncode == 2 and "NO WEIGHTS" in r.stdout
+
+
+def test_perturb_split_keeps_every_value():
+    import csv as _csv
+    import openpyxl
+    import perturb_split as ps
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "train")
+        os.makedirs(os.path.join(src, "data", "biz_1"))
+        open(os.path.join(src, "rulebook.md"), "w", encoding="utf-8").write("# r\n")
+        _write_jsonl(os.path.join(src, "questions.jsonl"), [{"id": "q1", "business_id": "biz_1", "question": "?"}])
+        _write_jsonl(os.path.join(src, "answers.jsonl"), [{"id": "q1", "type": "number", "answer": 1}])
+        with open(os.path.join(src, "data", "biz_1", "don.csv"), "w", encoding="utf-8", newline="") as f:
+            _csv.writer(f).writerows([["Mã đơn", "Ngày", "Tiền"], ["D1", "2025-05-01", "1.200.000"], ["D2", "", "5"]])
+        wb = openpyxl.Workbook()
+        wb.active.title = "A"
+        for r in (["TIÊU ĐỀ"], ["Mã hàng", "Tên"], ["H1", "Cà phê"]):
+            wb.active.append(r)
+        wb.create_sheet("B").append(["x", "y"])
+        wb.save(os.path.join(src, "data", "biz_1", "hang.xlsx"))
+
+        def values(dirpath):
+            out = []
+            for f in sorted(os.listdir(dirpath)):
+                p = os.path.join(dirpath, f)
+                if f.endswith(".csv"):
+                    text = open(p, encoding="utf-8-sig").read()
+                    delim = ";" if ";" in text.splitlines()[0] else ","
+                    out += [v for r in _csv.reader(text.splitlines(), delimiter=delim) for v in r if v]
+                elif f.endswith(".xlsx"):
+                    w = openpyxl.load_workbook(p, read_only=True)
+                    out += [str(v) for ws in w.worksheets for r in ws.iter_rows(values_only=True) for v in r if v]
+                    w.close()                                  # read-only books keep the file open (Windows)
+            return sorted(v.upper() for v in out)
+
+        base = values(os.path.join(src, "data", "biz_1"))
+        for kind in ps.KINDS:
+            out, shops, _ = ps.make(src, os.path.join(d, "out"), kind)
+            assert shops == ["biz_1"] and os.path.exists(os.path.join(out, "answers.jsonl"))
+            assert values(os.path.join(out, "data", "biz_1")) == base, kind      # same values, other layout
+        w = openpyxl.load_workbook(os.path.join(d, "out", "sheets_reversed", "data", "biz_1", "hang.xlsx"))
+        assert w.sheetnames == ["B", "A"]
+
+
+def test_leave_intent_out_scores_only_the_sql_route():
+    import leave_intent_out as lio
+    recs = []
+    for s in range(6):
+        for i, it in enumerate(("revenue", "units")):
+            gold = 10 + i
+            g4v = gold if it == "revenue" else gold + 1
+            mk = lambda gen, v, **d: __import__("datamate.select.selector", fromlist=["Candidate"]).Candidate(
+                gen, __import__("datamate.engine.answer", fromlist=["Answer"]).Answer("number", v), d.pop("intent", None), d)
+            recs.append({"id": f"q{s}{i}", "biz": f"b{s}", "question": "?", "ref": {"type": "number", "answer": gold},
+                         "cands": [mk("G1_rule", gold, intent=it), mk("G4_base", g4v, sql="a", family="m"),
+                                   mk("G4_cte", g4v, sql="b", family="m")]})
+    rows = lio.run(recs, folds=3)
+    by = {it: [x for x in rows if x["intent"] == it] for it in ("revenue", "units")}
+    assert all(x["score"] >= 0 for x in by["revenue"]) and any(x["score"] == 1 for x in by["revenue"])
+    assert all(x["score"] <= 0 for x in by["units"])       # G1 removed: only the (wrong) SQL answers remain

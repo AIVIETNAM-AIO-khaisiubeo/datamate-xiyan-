@@ -468,15 +468,46 @@ Bản nhiễu vẫn được làm từ train, nên nó chỉ là ước lượng
 """)
 
 md("""
-## 7. Tạo `submission.jsonl` cho public test bằng model fine-tune
+### Khả năng tổng quát cho private (chỉ CPU, nhãn train)
 
-- **7a (chỉ CPU, khoảng 1 phút):** áp bộ chọn mới lên lần chạy public đã có, không chạy lại LLM. Kết quả là file nộp
-  của **bước 1** (bộ chọn mới; lần chạy cũ không có G4). Dòng `--legacy` phải in `same_as_logged_final 1000`: tức là
-  replay dựng lại đúng lần chạy cũ, nên file mới chỉ khác ở những chỗ bộ chọn mới quyết định khác.
-- **7b (GPU; A100 khoảng 15 phút, T4 khoảng 1,5–3 giờ, ước lượng):** chạy lại toàn bộ với code mới (bước 1 + 2: bộ
-  chọn mới và G4 đã sửa). Ô này tự chạy lại khi reliability, code hoặc GPU thay đổi. Giữ tab Colab mở trong lúc chạy.
+Private sẽ có loại câu hỏi và cách trình bày dữ liệu mới. Hai phép đo dưới đây dùng nhãn train để ước lượng điều đó:
 
-Mỗi file nên nộp **một lần** lên leaderboard, và so với bản rule-only. Đừng thử đi thử lại theo điểm public.
+- **Leave-intent-out:** với từng intent, bỏ mọi ứng viên đi qua bộ thực thi luật (G1, G2, G3), như thể G1 chưa từng
+  được viết cho loại câu đó. Phép đo cho biết riêng SQL (G4) còn trả lời được bao nhiêu câu, đúng bao nhiêu, và PA
+  mang lại. PA âm ở một intent nghĩa là gặp loại câu lạ thì G4 làm mất điểm.
+- **Đổi cách trình bày dữ liệu:** cùng shop, cùng câu hỏi, cùng đáp án, nhưng file được viết lại: đảo thứ tự cột, đảo
+  thứ tự sheet, header viết hoa, CSV dùng `;`. Không giá trị nào bị đổi, nên G1 phải trả lời **y hệt** như trên file
+  gốc.
+""")
+code("""
+if PHASE == "A" and os.path.isdir(f"{EVAL}/noisy_lora/logs"):
+    !cd {REPO} && python scripts/leave_intent_out.py {EVAL}/noisy_lora/logs {NOISY}/answers.jsonl --folds 3
+else:
+    print("Chưa có log noisy_lora: chạy ô chạy ở trên (cần GPU)")
+""")
+code("""
+PERT = "/content/perturb"
+!cd {REPO} && python scripts/perturb_split.py data/train {PERT} --fold {HOLDOUT_FOLD}
+!cd {REPO} && python -m datamate.predict --data data/train --fold {HOLDOUT_FOLD} --llm none --out {PERT}_runs/orig/submission.jsonl 2>&1 | grep "PA="
+for k in ("cols_reversed", "sheets_reversed", "headers_upper", "csv_semicolon"):
+    print("=====", k)
+    !cd {REPO} && python -m datamate.predict --data {PERT}/{k} --llm none --out {PERT}_runs/{k}/submission.jsonl 2>&1 | grep "PA="
+    !cd {REPO} && python scripts/compare_submissions.py {PERT}_runs/orig/submission.jsonl {PERT}_runs/{k}/submission.jsonl | sed -n 3p
+""")
+
+md("""
+## 7. Tạo `submission.jsonl` cho public test
+
+- **7a (chỉ CPU):** áp bộ chọn mới lên log của lần nộp 0,777. Chỉ để tham khảo; log cũ thiếu vài trường, nên replay
+  chỉ gần đúng.
+- **7b (GPU; T4 khoảng 1,7 giờ):** chạy lại toàn bộ trên public với LLM. **Chỉ chạy khi chưa có**, hoặc khi đặt
+  `RERUN_7B = True` (ví dụ sau khi đổi model hay adapter). Thay đổi ở bộ chọn và các bộ kiểm tra không cần chạy lại 7b:
+  ô 7c áp chúng lên log của 7b.
+- **7c (chỉ CPU, khoảng 1 phút): bản cuối để nộp.** Bộ chọn mới nhất, cộng các bộ kiểm tra (hình thức câu hỏi cho mọi
+  ứng viên, sự phản đối của LLM đã hiệu chuẩn, rulebook mới), áp lên log của 7b, với reliability vừa tính ở mục 6.
+  Ô in **mã sha256** của file. Kiểm tra đúng mã đó trước khi nộp, vì các file nộp có tên rất giống nhau.
+
+Mỗi file chỉ nộp **một lần**, và luôn so với bản rule-only. Đừng sửa luật theo từng câu public.
 """)
 code("""
 # 7a. Bộ chọn mới trên lần chạy public trước (không cần GPU)
@@ -507,16 +538,18 @@ if not os.path.exists(REL):
     print("Chưa có reliability_phaseA.json: dùng reliability của repo (LLM chưa hiệu chuẩn; nên chạy mục 6 trước)")
     REL = REPO_REL
 PUB = f"{PUBD}/submission.jsonl"
-assert INFER, "Không có GPU: 7b cần GPU (A100/L4/T4). Dùng file của 7a."
-assert adapter_ok(), "Không có adapter: xem ô kiểm tra sau ô clone (mục 2)"
-rel_now = open(REL, encoding="utf-8").read()
-head = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-run_id = f"{head} {INFER} {VLLM_FLAGS}"           # code + model + cờ vLLM của lần chạy
-used, ver = f"{PUBD}/reliability_used.json", f"{PUBD}/code_version.txt"
-fresh = (os.path.exists(PUB) and os.path.exists(used) and open(used, encoding="utf-8").read() == rel_now
-         and os.path.exists(ver) and open(ver).read() == run_id)
-if not fresh:
-    # Tạo lại khi reliability, code hoặc GPU thay đổi. Lần chạy trước được giữ ở *_prev (chạy 7a trước nếu muốn replay nó).
+RERUN_7B = False                  # True: chạy lại LLM trên public (GPU, T4 khoảng 1,7 giờ) dù đã có kết quả
+have = os.path.exists(PUB) and os.path.isdir(f"{PUBD}/logs") and os.path.exists(f"{PUBD}/code_version.txt")
+if have and not RERUN_7B:
+    print("Đã có lần chạy 7b:", open(f"{PUBD}/code_version.txt").read(), "-> giữ nguyên; chạy 7c để có bản cuối")
+else:
+    assert INFER, "Không có GPU: 7b cần GPU (A100/L4/T4)."
+    assert adapter_ok(), "Không có adapter: xem ô kiểm tra sau ô clone (mục 2)"
+    rel_now = open(REL, encoding="utf-8").read()
+    head = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    run_id = f"{head} {INFER} {VLLM_FLAGS}"           # code + model + cờ vLLM của lần chạy
+    used, ver = f"{PUBD}/reliability_used.json", f"{PUBD}/code_version.txt"
+    # Lần chạy trước được giữ ở *_prev.
     if os.path.isdir(PUBD):
         shutil.rmtree(PUBD + "_prev", ignore_errors=True); shutil.move(PUBD, PUBD + "_prev")
     os.makedirs(PUBD)
@@ -539,6 +572,24 @@ code("""
 # leaderboard có thể đổi. Với code mới, số câu "changed" (LLM thay đáp án G1) phải rất nhỏ.
 # Mỗi khác biệt ghi vào diff_vs_rule_only.jsonl để đọc bằng mắt. Đừng sửa luật / prompt theo từng câu public.
 !cd {REPO} && python scripts/compare_submissions.py submissions/public_test_rule_only.jsonl {PUB} --questions data/public_test/questions.jsonl --logs {PUBD}/logs --out {PUBD}/diff_vs_rule_only.jsonl
+""")
+code("""
+# 7c. BẢN CUỐI ĐỂ NỘP: bộ chọn mới nhất + các bộ kiểm tra, áp lên log của 7b (chỉ CPU)
+import hashlib
+PUBD = f"{WORK}/public_phase{PHASE}"
+REL = f"{WORK}/reliability_phaseA.json"
+if not os.path.exists(REL):
+    !cd {REPO} && git checkout -- artifacts/reliability.json
+    REL = f"{REPO}/artifacts/reliability.json"
+    print("Chưa có reliability_phaseA.json: dùng reliability của repo (nên chạy ô validate ở mục 6 trước)")
+FINAL = f"{WORK}/public_phase{PHASE}_final/submission.jsonl"
+assert os.path.isdir(f"{PUBD}/logs"), f"Không có log của 7b ở {PUBD}/logs: chạy 7b trước (GPU)"
+!cd {REPO} && python scripts/replay_selector.py {PUBD}/logs --data data/public_test --reliability {REL} --out {FINAL} --compare submissions/public_test_rule_only.jsonl
+!cd {REPO} && python scripts/check_submission.py {FINAL} data/public_test/questions.jsonl
+!cd {REPO} && python scripts/compare_submissions.py submissions/public_test_rule_only.jsonl {FINAL} --questions data/public_test/questions.jsonl --logs {PUBD}/logs --out {WORK}/public_phase{PHASE}_final/diff_vs_rule_only.jsonl | head -4
+FINAL_SHA = hashlib.sha256(open(FINAL, "rb").read()).hexdigest()
+print(f"\\nFILE ĐỂ NỘP: {FINAL}\\nsha256: {FINAL_SHA}")
+print("Trên Drive: MyDrive/datamate/public_phaseA_final/submission.jsonl. Sau khi tải về, kiểm tra mã sha256 trùng với dòng trên.")
 """)
 
 md("""
@@ -594,13 +645,18 @@ shutil.copytree(ad_src, ad_dst)
 REL = f"{WORK}/reliability_phaseA.json"
 if os.path.exists(REL):
     shutil.copy(REL, f"{REPO}/artifacts/reliability.json")
-PUB = f"{WORK}/public_phase{PHASE}/submission.jsonl"
+import hashlib
 os.makedirs(f"{REPO}/submissions", exist_ok=True)
-if os.path.exists(PUB):
-    shutil.copy(PUB, f"{REPO}/submissions/public_test_lora_phase{PHASE.lower()}.jsonl")
-REPLAY = f"{WORK}/public_phase{PHASE}_replay/submission.jsonl"
-if os.path.exists(REPLAY):
-    shutil.copy(REPLAY, f"{REPO}/submissions/public_test_lora_phase{PHASE.lower()}_replay.jsonl")
+# Tên file có 8 ký tự đầu của sha256: hai file khác nội dung không bao giờ trùng tên (lần trước một bản cũ và một bản
+# mới cùng tên public_test_lora_phasea.jsonl, nên rất dễ nộp nhầm).
+for kind, src in (("final", f"{WORK}/public_phase{PHASE}_final/submission.jsonl"),
+                  ("7b", f"{WORK}/public_phase{PHASE}/submission.jsonl"),
+                  ("7a_replay", f"{WORK}/public_phase{PHASE}_replay/submission.jsonl")):
+    if os.path.exists(src):
+        sha = hashlib.sha256(open(src, "rb").read()).hexdigest()
+        dst = f"submissions/public_test_lora_phase{PHASE.lower()}_{kind}_{sha[:8]}.jsonl"
+        shutil.copy(src, f"{REPO}/{dst}")
+        print(f"{kind:10s} -> {dst}")
 res_path = f"{WORK}/eval_phaseA/results.json"
 results = json.load(open(res_path)) if os.path.exists(res_path) else {}
 counts = {}

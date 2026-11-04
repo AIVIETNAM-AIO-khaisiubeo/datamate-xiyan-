@@ -15,7 +15,16 @@ from .selector import Candidate
 DETAIL_KEYS = ("flags", "family", "support", "sql")
 
 
-def candidates_from_log(lg: Dict) -> List[Candidate]:
+def candidates_from_log(lg: Dict, guards: bool = True) -> List[Candidate]:
+    """Candidates of a logged question, with the same risk flags the agent sets before selecting (form_guard)."""
+    cands = _candidates(lg)
+    if guards:
+        from .form_guard import apply_guards
+        apply_guards(lg.get("question", ""), cands, lg.get("new_rulebook_rows") or [])
+    return cands
+
+
+def _candidates(lg: Dict) -> List[Candidate]:
     support_by_sql = {}
     for sc in lg.get("sql_candidates") or []:
         if sc.get("sql"):

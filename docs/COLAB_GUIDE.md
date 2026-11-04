@@ -194,6 +194,28 @@ Lưu ý khi chạy trên T4:
    nối. Ô sau ô clone liệt kê những gì đang thiếu, và tự lấy adapter từ nhánh `colab-finetune-phasea` trên GitHub
    (khoảng 0,26 GB băng thông Git LFS). Log của lần nộp 0,777 (cho ô 7a) chỉ có trên Drive cũ: ô đó chỉ ra cách lấy.
 
+## 6d. Bản cuối để nộp (7c) — chỉ cần CPU
+
+Các thay đổi sau lần chạy T4 đều nằm ở bộ chọn và các bộ kiểm tra, không ở LLM. Vì vậy **không cần GPU** và không cần
+chạy lại 7b: ô 7c áp chúng lên log của 7b.
+
+1. Mở notebook từ link GitHub, chọn runtime **CPU**.
+2. Chạy ô 1, mục 2 (mount Drive, clone, kiểm tra), mục 3 (cài thư viện; vLLM tự bỏ qua trên CPU).
+3. Mục 6:
+   - ô chạy: chỉ chạy lại `noisy_rule`; các lần chạy LLM được giữ;
+   - **ô validate**: tính lại `reliability_phaseA.json`, giờ có thêm độ tin cậy của LLM khi nó phản đối G1;
+   - bảng kết quả;
+   - (tuỳ chọn) hai ô "khả năng tổng quát".
+4. Mục 7: bỏ qua 7a. Ô 7b in "Đã có lần chạy 7b … giữ nguyên". Chạy **7c**.
+5. Tải `MyDrive/datamate/public_phaseA_final/submission.jsonl` từ Drive. Kiểm tra mã sha256 trùng với dòng `sha256:`
+   mà 7c in ra (Windows: `certutil -hashfile submission.jsonl SHA256`), rồi nộp file đó.
+6. Mục 8 đẩy file lên GitHub với tên `public_test_lora_phasea_final_<8 ký tự sha>.jsonl`.
+
+**Lần nộp ra 0,777000 lần thứ hai:** file 7b giống bản rule-only (0,912) ở 933/1000 câu, nên điểm của nó chỉ có thể
+nằm trong khoảng 0,845–0,979. Điểm 0,777000 trùng đúng với bản cũ cho thấy file được nộp là bản cũ.
+`Downloads/public_test_lora_phasea.jsonl` (74 câu `unanswerable`) là bản cũ; file 7b khi tải về có tên
+`public_test_lora_phasea (1).jsonl`. Từ giờ, tên file trong `submissions/` có thêm mã sha để không bị trùng.
+
 ## 7. Lưu ý về luật và chi phí
 
 - **Chỉ dữ liệu train** được dùng để fine-tune và hiệu chuẩn; notebook không đọc nhãn public (public không có nhãn),

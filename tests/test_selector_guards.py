@@ -94,3 +94,54 @@ def test_extract_sql_handles_the_fine_tuned_output():
     assert extract_sql("Câu SQL:\n```\n" + sql + "\n```\nGiải thích ...") == sql
     assert extract_sql("WITH t AS (SELECT 1 AS x)\nSELECT x FROM t\n```") == "WITH t AS (SELECT 1 AS x)\nSELECT x FROM t"
     assert extract_sql("không biết") is None
+
+
+def test_dissent_only_vetoes_when_the_llm_is_right_more_often_than_wrong_there():
+    cands = [g1(34), llm("G3_rewrite", 99)]
+    s = sel()
+    a, _ = s.select(cands)
+    assert a.value == 34                                      # no measured dissent reliability: 0.5, no veto
+    s.rel = dict(REL, G3_rewrite=dict(REL["G3_rewrite"], __dissent__=0.15))
+    assert s.select(cands)[0].value == 34                     # LLM usually wrong when it contradicts G1
+    s.rel = dict(REL, G1_rule={"__all__": 0.8, "units": 0.8}, G3_rewrite=dict(REL["G3_rewrite"], __dissent__=0.9))
+    assert s.select(cands)[0].type == "abstain"               # LLM usually right there: the rule answer is withheld
+
+
+def test_form_guard_checks_llm_answers_against_the_original_question():
+    from datamate.select.form_guard import apply_guards
+    q = "Tháng 6/2026 điện thoại cũ bán ra mấy máy, chiếm bao nhiêu phần trăm?"
+    cands = [Candidate("G3_rewrite", Answer("number", 259870000), "revenue"),
+             Candidate("G4_base", Answer("percent", 12.5), None, {"sql": "select 1", "support": 2})]
+    assert apply_guards(q, cands) == 1
+    assert "percent asked" in cands[0].answer.meta["conflict"] and not cands[1].answer.meta.get("conflict")
+    assert apply_guards(q, cands) == 0                        # idempotent
+
+
+def test_unknown_rulebook_row_leaves_only_the_sql_route():
+    from datamate.rulebook import concept_tokens, mentions, new_rows, parse_rulebook
+    from datamate.select.form_guard import apply_guards
+    rb = parse_rulebook("| Luật | Nghĩa |\n|---|---|\n| Khách chăm chỉ nhất | khách có nhiều ngày mua nhất |\n"
+                        "| Doanh thu một đơn | tổng thành tiền |\n")
+    rows = new_rows(rb, known={"doanh thu mot don"})
+    assert [r.key for r in rows] == ["khach cham chi nhat"]
+    toks = concept_tokens(rows[0].key)
+    assert mentions("khach nao cham chi nhat thang 5", toks) and not mentions("khach mua nhieu nhat", toks)
+    cands = [g1(5), llm("G2_frame", None, "unanswerable"),
+             Candidate("G4_cte", Answer("string", "Lan"), None, {"sql": "select 1", "family": "m", "support": 2})]
+    apply_guards("Khách nào chăm chỉ nhất tháng 5?", cands, ["Khách chăm chỉ nhất"])
+    assert cands[0].answer.meta["conflict"].startswith("rulebook row") and cands[1].answer.meta.get("conflict")
+    assert not cands[2].answer.meta.get("conflict")
+    s = sel()
+    s.rel = dict(REL, G4_cte={"__all__": 0.9})
+    assert s.select(cands)[0].value == "Lan"                  # the rule answer is no anchor any more
+
+
+def test_known_rulebook_rows_cover_train_and_public():
+    import json
+    from datamate.rulebook import new_rows, parse_rulebook
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    known = set(json.load(open(os.path.join(root, "artifacts", "known_rulebook_rows.json"), encoding="utf-8"))["rows"])
+    for split in ("train", "public_test"):
+        p = os.path.join(root, "data", split, "rulebook.md")
+        if os.path.exists(p):
+            assert new_rows(parse_rulebook(open(p, encoding="utf-8").read()), known) == []

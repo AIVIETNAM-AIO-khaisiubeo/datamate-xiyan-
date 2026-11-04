@@ -28,6 +28,7 @@ from .ingest.builder import load_biz
 from .nlu.rules import RuleParser
 from .nlu.timeparse import LunarCalendar
 from .rulebook import parse_rulebook
+from .select.form_guard import apply_guards
 from .select.selector import Candidate, Selector
 from .textnorm import fold
 
@@ -72,6 +73,14 @@ class DataMateAgent:
         rb_path = os.path.join(split_dir, "rulebook.md")
         self.rulebook_text = open(rb_path, encoding="utf-8").read() if os.path.exists(rb_path) else ""
         self.rulebook = parse_rulebook(self.rulebook_text)
+        # rulebook rows the engine was never written for (new concepts of this split): see select/form_guard.py
+        from .rulebook import KNOWN_ROWS_PATH, new_rows
+        kp = os.path.join(ROOT, KNOWN_ROWS_PATH)
+        known = set(json.load(open(kp, encoding="utf-8"))["rows"]) if os.path.exists(kp) else None
+        self.new_rule_rows = new_rows(self.rulebook, known) if known is not None else []
+        if self.new_rule_rows:
+            print(f"[datamate] {len(self.new_rule_rows)} rulebook rows unknown to the rule engine: "
+                  f"{[r.name for r in self.new_rule_rows][:8]}", file=sys.stderr)
         self.cal = LunarCalendar(os.path.join(split_dir, "calendar.csv"))
         self.labelled = os.path.exists(os.path.join(split_dir, "answers.jsonl"))
         self.selector = Selector(self.cfg["reliability_path"], tau=self.cfg["tau"])
@@ -156,6 +165,11 @@ class DataMateAgent:
                 log["candidates"].append({"gen": "G1_rule", "intent": fr.intent, "answer": a.to_submission(q["id"]),
                                           "reason": a.reason, "meta": _risk_meta(a)})
             log["elapsed_g1_s"] = round(time.time() - tq, 4)
+            hit = self._new_rows_named(q["question"])
+            if hit:
+                log["new_rulebook_rows"] = [r.name for r in hit]
+                log["new_rulebook_text"] = [f"{r.name}: {r.text}" for r in hit]
+            apply_guards(q["question"], cands[q["id"]], log.get("new_rulebook_rows") or [])
             logs[q["id"]] = log
         # ---------------------------------------------------------------- LLM generators
         llm_on = any(self.cfg.get(k) for k in ("use_g2", "use_g3", "use_g4"))
@@ -172,6 +186,7 @@ class DataMateAgent:
         # ---------------------------------------------------------------- select + write logs
         res = {}
         for q in items:
+            apply_guards(q["question"], cands[q["id"]], logs[q["id"]].get("new_rulebook_rows") or [])
             ans, info = self.selector.select(cands[q["id"]], trusted)
             sub = ans.to_submission(q["id"])
             res[q["id"]] = sub
@@ -184,6 +199,15 @@ class DataMateAgent:
                 with open(os.path.join(log_dir, f"{q['id']}.json"), "w", encoding="utf-8") as fh:
                     json.dump(lg, fh, ensure_ascii=False, indent=1, default=str)
         return res
+
+    def _new_rows_named(self, question: str):
+        """Rulebook rows unknown to the engine whose name appears in the question (in order, small gaps allowed)."""
+        if not self.new_rule_rows:
+            return []
+        from .rulebook import concept_tokens, mentions
+        from .textnorm import normalize_question
+        nq = normalize_question(question)
+        return [r for r in self.new_rule_rows if mentions(nq, concept_tokens(r.key))]
 
     def _g1(self, rp: RuleParser, biz, question: str, today: dt.date):
         try:
@@ -267,10 +291,14 @@ class DataMateAgent:
                                                              "meta": _risk_meta(a)})
         # G4: XiYan pipeline (Schema Filter -> multi-schema x multi-format SQL -> self-refine -> selection) -----
         if self.cfg.get("use_g4") and self.time_left() > 1200:
+            for q in items:                     # flags first, so that a flagged rule answer sends the question to G4
+                apply_guards(q["question"], cands[q["id"]], logs[q["id"]].get("new_rulebook_rows") or [])
             if self.cfg.get("g4_scope") == "all":
                 need = list(items)
             else:
-                need = [q for q in items if self.selector.select(cands[q["id"]])[0].type == "abstain"]
+                # new rulebook concepts first: only the SQL route can answer them
+                need = sorted((q for q in items if self.selector.select(cands[q["id"]])[0].type == "abstain"),
+                              key=lambda q: not logs[q["id"]].get("new_rulebook_rows"))
             need = need[: self.cfg["g4_max_per_biz"]]
             if need:
                 self._xiyan_sql(biz, rp, need, cands, logs)
@@ -298,7 +326,10 @@ def _xiyan_sql_impl(self, biz, rp, need, cands, logs):
     want = set(self.cfg.get("g4_schemas") or ["full"])
     jobs, union_cols = [], {}
     tis = [parse_time(normalize_question(q["question"]), dt.date.fromisoformat(q["as_of_date"]), self.cal) for q in need]
-    evids = [ev.evidence(q["question"], q["as_of_date"]) for q in need]
+    # a rulebook row the engine does not know is the definition the SQL must implement: always put it first
+    evids = [("\n".join(f"- (luật mới) {t}" for t in logs[q["id"]].get("new_rulebook_text", [])) + "\n"
+              if logs[q["id"]].get("new_rulebook_text") else "") + ev.evidence(q["question"], q["as_of_date"])
+             for q in need]
     fress = sf.run_batch([q["question"] for q in need], evids, [ti.text_wo_time for ti in tis])   # batched LLM calls
     for q, ti, evid, fres in zip(need, tis, evids, fress):
         today = dt.date.fromisoformat(q["as_of_date"])

@@ -79,6 +79,21 @@ class Candidate:
         return self.detail.get("family") or ("llm" if is_llm_gen(self.gen) else self.gen)
 
 
+def is_clean_rule(c: Candidate, trusted=None, anchor_gens=("G1_rule",)) -> bool:
+    """A rule answer with no risk signal (the selector's anchor; also used to fit the dissent reliability)."""
+    if c.gen not in anchor_gens or c.answer.type == "abstain":
+        return False
+    m = c.answer.meta
+    if m.get("oov") or m.get("conflict") or m.get("tie"):
+        return False
+    if trusted is not None and c.intent and trusted.get(c.intent) is False:
+        return False
+    return _sanity_penalty(c.answer) >= 0
+
+
+DISSENT_KEY = "__dissent__"      # reliability of a generator when it disagrees with a clean rule answer
+
+
 def _sql_support(members: List[Candidate]) -> int:
     """Executions behind a group: distinct SQL candidates (plus prompts that produced the same SQL).
     G_select re-picks one of them, so it adds no execution."""
@@ -107,18 +122,14 @@ class Selector:
 
     def _anchor(self, votes: List[Candidate], trusted=None) -> Optional[Candidate]:
         """A rule answer with no risk signal: LLM answers may lower its confidence but not replace it."""
-        for c in votes:
-            if c.gen not in self.anchor_gens:
-                continue
-            m = c.answer.meta
-            if m.get("oov") or m.get("conflict") or m.get("tie"):
-                continue
-            if trusted is not None and c.intent and trusted.get(c.intent) is False:
-                continue
-            if _sanity_penalty(c.answer) < 0:
-                continue
-            return c
-        return None
+        return next((c for c in votes if is_clean_rule(c, trusted, self.anchor_gens)), None)
+
+    def _r_dissent(self, c: Candidate, trusted=None) -> float:
+        """Weight of an LLM candidate that contradicts a clean rule answer.  Its usual reliability is measured
+        mostly where it agrees with the rule, so it is replaced by the reliability measured on the disagreements
+        of held-out shops (validate.py, key __dissent__; 0.5 when never measured).  By Chow's rule the dissent
+        only pushes the rule answer towards abstention when the LLM is right more often than wrong there."""
+        return min(self._r_eff(c, trusted), self.rel.get(c.gen, {}).get(DISSENT_KEY, 0.5))
 
     def _family_votes(self, members: List[Candidate], trusted=None) -> Dict[str, float]:
         """family -> reliability of its vote for this group (its most reliable member speaks for it)."""
@@ -161,12 +172,16 @@ class Selector:
             s = sum(logit(r) for r in fams.values())
             # every other family that voted for a different answer counts against this group (once, its strongest vote)
             dissent: Dict[str, float] = {}
+            anchored = anchor is not None and key == anchor.answer.key()
             for k2, f2 in votes_by_group.items():
                 if k2 == key:
                     continue
                 for f, r in f2.items():
-                    if f not in fams:
-                        dissent[f] = max(dissent.get(f, 0.0), r)
+                    if f in fams:
+                        continue
+                    if anchored:                          # disagreement with a clean rule answer: its own reliability
+                        r = min(r, max(self._r_dissent(c, trusted) for c in groups[k2] if self._fam(c) == f))
+                    dissent[f] = max(dissent.get(f, 0.0), r)
             s -= self.lam * sum(max(0.0, logit(r)) for r in dissent.values())
             s += _sanity_penalty(members[0].answer)
             p = sigmoid(s)

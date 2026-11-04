@@ -27,7 +27,7 @@ sys.path.insert(0, ROOT)
 
 from datamate.scorer import score_one  # noqa: E402
 from datamate.select.logs import candidates_from_log  # noqa: E402
-from datamate.select.selector import Selector  # noqa: E402
+from datamate.select.selector import DISSENT_KEY, Selector, is_clean_rule  # noqa: E402
 
 
 def load(logs_dir, answers):
@@ -37,8 +37,9 @@ def load(logs_dir, answers):
         lg = json.load(open(os.path.join(logs_dir, f), encoding="utf-8"))
         if lg["id"] not in refs:
             continue
-        recs.append({"id": lg["id"], "biz": lg["business_id"], "question": lg["question"],
-                     "cands": candidates_from_log(lg), "ref": refs[lg["id"]]})
+        cands = candidates_from_log(lg)          # with the risk flags the agent sets before selecting
+        recs.append({"id": lg["id"], "biz": lg["business_id"], "question": lg["question"], "cands": cands,
+                     "ref": refs[lg["id"]]})
     return recs
 
 
@@ -67,6 +68,21 @@ def fit(recs, k=10.0, prior=0.9, cap=0.985, unans_prior=0.5):
         rel[g][it] = round(min(cap, (ok + k * pr) / (ok + bad + k)), 4)
     for g, (ok, bad) in tot.items():
         rel[g]["__all__"] = round(min(cap, (ok + k * prior) / (ok + bad + k)), 4)
+    # how often a generator is right when it contradicts a clean rule answer (selector: dissent weight); prior 0.5
+    dis = collections.defaultdict(lambda: [0, 0])
+    for r in recs:
+        anchor = next((c for c in r["cands"] if is_clean_rule(c)), None)
+        if anchor is None:
+            continue
+        seen = set()
+        for c in r["cands"]:
+            if c is anchor or c.gen in seen or c.answer.type == "abstain" or c.answer.key() == anchor.answer.key():
+                continue
+            seen.add(c.gen)
+            s = score_one(c.answer.to_submission(r["id"]), r["ref"])
+            dis[c.gen][0 if s == 1 else 1] += 1
+    for g, (ok, bad) in dis.items():
+        rel[g][DISSENT_KEY] = round(min(cap, (ok + k * 0.5) / (ok + bad + k)), 4)
     return dict(rel)
 
 
