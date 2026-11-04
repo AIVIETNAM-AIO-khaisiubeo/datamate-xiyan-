@@ -154,8 +154,7 @@ class DataMateAgent:
                 cands[q["id"]].append(Candidate("G1_rule", a, fr.intent))
                 trusted[fr.intent] = self.rulebook.intent_trusted(fr.intent)
                 log["candidates"].append({"gen": "G1_rule", "intent": fr.intent, "answer": a.to_submission(q["id"]),
-                                          "reason": a.reason,
-                                          "meta": {k: a.meta[k] for k in ("oov", "conflict", "tie") if a.meta.get(k)}})
+                                          "reason": a.reason, "meta": _risk_meta(a)})
             log["elapsed_g1_s"] = round(time.time() - tq, 4)
             logs[q["id"]] = log
         # ---------------------------------------------------------------- LLM generators
@@ -228,6 +227,7 @@ class DataMateAgent:
         from .llm.generators import llm_json_to_text
         vocab = vocab_for(biz, rp)
         tl = time.time()
+        fam = getattr(self.backend, "family", None) or "llm"     # all routes of one LLM are one vote in the selector
         # G3: rewrite -> G1 ------------------------------------------------
         if self.cfg.get("use_g3"):
             prompts = [self.g3.build_prompt(q["question"], q["as_of_date"], vocab) for q in items]
@@ -238,9 +238,10 @@ class DataMateAgent:
                     fr, a = self._g1(rp, biz, text, today)
                     logs[q["id"]].setdefault("g3_rewrite", text)
                     if fr is not None:
-                        cands[q["id"]].append(Candidate("G3_rewrite", a, fr.intent, {"text": text}))
-                        logs[q["id"]]["candidates"].append({"gen": "G3_rewrite", "intent": fr.intent,
-                                                             "answer": a.to_submission(q["id"]), "text": text})
+                        cands[q["id"]].append(Candidate("G3_rewrite", a, fr.intent, {"text": text, "family": fam}))
+                        logs[q["id"]]["candidates"].append({"gen": "G3_rewrite", "intent": fr.intent, "family": fam,
+                                                             "answer": a.to_submission(q["id"]), "text": text,
+                                                             "meta": _risk_meta(a)})
         # G2: JSON frame -> canonical text -> G1 ---------------------------
         if self.cfg.get("use_g2") and self.time_left() > 900:
             prompts = [self.g2.build_prompt(q["question"], q["as_of_date"], vocab) for q in items]
@@ -251,16 +252,19 @@ class DataMateAgent:
                     logs[q["id"]]["g2_json"] = js
                     if js.get("intent") == "unanswerable":
                         a = Answer("unanswerable", reason=js.get("reason") or "")
-                        cands[q["id"]].append(Candidate("G2_frame", a, "unanswerable", {"json": js}))
+                        cands[q["id"]].append(Candidate("G2_frame", a, "unanswerable", {"json": js, "family": fam}))
+                        logs[q["id"]]["candidates"].append({"gen": "G2_frame", "intent": "unanswerable", "family": fam,
+                                                             "answer": a.to_submission(q["id"])})
                         continue
                     text = llm_json_to_text(js)
                     if not text:
                         continue
                     fr, a = self._g1(rp, biz, text, today)
                     if fr is not None:
-                        cands[q["id"]].append(Candidate("G2_frame", a, fr.intent, {"json": js, "text": text}))
-                        logs[q["id"]]["candidates"].append({"gen": "G2_frame", "intent": fr.intent,
-                                                             "answer": a.to_submission(q["id"]), "text": text})
+                        cands[q["id"]].append(Candidate("G2_frame", a, fr.intent, {"json": js, "text": text, "family": fam}))
+                        logs[q["id"]]["candidates"].append({"gen": "G2_frame", "intent": fr.intent, "family": fam,
+                                                             "answer": a.to_submission(q["id"]), "text": text,
+                                                             "meta": _risk_meta(a)})
         # G4: XiYan pipeline (Schema Filter -> multi-schema x multi-format SQL -> self-refine -> selection) -----
         if self.cfg.get("use_g4") and self.time_left() > 1200:
             if self.cfg.get("g4_scope") == "all":
@@ -325,10 +329,13 @@ def _xiyan_sql_impl(self, biz, rp, need, cands, logs):
         for c in lst:
             if c.ok:
                 a = Answer(c.answer_type, c.value)
-                det = {"sql": c.sql, "family": c.family, "flags": c.flags, "schema_id": c.schema_id, "fmt": c.fmt}
+                support = 1 + len(c.also)              # prompts (schema x format) that produced this same SQL
+                det = {"sql": c.sql, "family": c.family, "flags": c.flags, "schema_id": c.schema_id, "fmt": c.fmt,
+                       "support": support}
                 cands[j["qid"]].append(Candidate(c.generator, a, None, det))
                 logs[j["qid"]]["candidates"].append({"gen": c.generator, "answer": a.to_submission(j["qid"]),
-                                                     "sql": c.sql, "schema": c.schema_id, "flags": c.flags})
+                                                     "sql": c.sql, "schema": c.schema_id, "flags": c.flags,
+                                                     "family": c.family, "support": support})
         shown, mode, top = reorganize(lst, order)
         logs[j["qid"]]["selection"] = {"mode": mode, "largest_cluster": top, "n_shown": len(shown)}
         if self.selmodel is not None and len(shown) > 1 and self.time_left() > 600:
@@ -342,10 +349,11 @@ def _xiyan_sql_impl(self, biz, rp, need, cands, logs):
             if c is None:
                 continue
             a = Answer(c.answer_type, c.value)
-            cands[sj["qid"]].append(Candidate("G_select", a, None,
-                                              {"sql": c.sql, "family": "selector:" + c.family, "flags": c.flags}))
+            # the selection model is the same LLM again: same family, so its pick is not an extra vote
+            cands[sj["qid"]].append(Candidate("G_select", a, None, {"sql": c.sql, "family": c.family, "flags": c.flags}))
             logs[sj["qid"]]["selection"]["chosen"] = c.sql
-            logs[sj["qid"]]["candidates"].append({"gen": "G_select", "answer": a.to_submission(sj["qid"]), "sql": c.sql})
+            logs[sj["qid"]]["candidates"].append({"gen": "G_select", "answer": a.to_submission(sj["qid"]), "sql": c.sql,
+                                                  "family": c.family, "flags": c.flags})
     runner.close()
 
 
@@ -363,6 +371,11 @@ def load_sql_bank(path: Optional[str]):
             r = json.loads(line)
             items.append({"q": r["question"], "intent": r["intent"], "sql": r["sql"], "biz": r["business_id"]})
     return ExampleBank(items) if items else None
+
+
+def _risk_meta(a: Answer) -> dict:
+    """Risk signals the selector reads (logged so that runs can be replayed / calibrated exactly)."""
+    return {k: a.meta[k] for k in ("oov", "conflict", "tie") if a.meta.get(k)}
 
 
 def _guess_type(q: str) -> str:

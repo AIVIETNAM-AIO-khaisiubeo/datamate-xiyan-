@@ -25,9 +25,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from datamate.engine.answer import Answer  # noqa: E402
 from datamate.scorer import score_one  # noqa: E402
-from datamate.select.selector import Candidate, Selector  # noqa: E402
+from datamate.select.logs import candidates_from_log  # noqa: E402
+from datamate.select.selector import Selector  # noqa: E402
 
 
 def load(logs_dir, answers):
@@ -37,13 +37,8 @@ def load(logs_dir, answers):
         lg = json.load(open(os.path.join(logs_dir, f), encoding="utf-8"))
         if lg["id"] not in refs:
             continue
-        cands = []
-        for c in lg.get("candidates", []):
-            a = c.get("answer") or {}
-            ans = Answer(a.get("type", "abstain"), a.get("answer"), reason=a.get("reason", ""), meta=dict(c.get("meta") or {}))
-            det = {"flags": c.get("flags") or [], "family": c.get("family")} if c.get("flags") or c.get("family") else {}
-            cands.append(Candidate(c["gen"], ans, c.get("intent"), det))
-        recs.append({"id": lg["id"], "biz": lg["business_id"], "question": lg["question"], "cands": cands, "ref": refs[lg["id"]]})
+        recs.append({"id": lg["id"], "biz": lg["business_id"], "question": lg["question"],
+                     "cands": candidates_from_log(lg), "ref": refs[lg["id"]]})
     return recs
 
 
@@ -53,7 +48,10 @@ def ikey(c):
     return c.intent or "__none__"
 
 
-def fit(recs, k=10.0, prior=0.9, cap=0.985):
+def fit(recs, k=10.0, prior=0.9, cap=0.985, unans_prior=0.5):
+    """Bayesian shrinkage per generator x intent.  "unanswerable" keys shrink towards unans_prior: train has only
+    21 unanswerable questions, so with prior 0.9 an LLM's unanswerable claim got ~0.91 from almost no evidence
+    (on public it then replaced 46 value answers)."""
     cnt = collections.defaultdict(lambda: [0, 0])
     tot = collections.defaultdict(lambda: [0, 0])
     for r in recs:
@@ -65,7 +63,8 @@ def fit(recs, k=10.0, prior=0.9, cap=0.985):
             tot[c.gen][0 if s == 1 else 1] += 1
     rel = collections.defaultdict(dict)
     for (g, it), (ok, bad) in cnt.items():
-        rel[g][it] = round(min(cap, (ok + k * prior) / (ok + bad + k)), 4)
+        pr = unans_prior if it.startswith("unanswerable") else prior
+        rel[g][it] = round(min(cap, (ok + k * pr) / (ok + bad + k)), 4)
     for g, (ok, bad) in tot.items():
         rel[g]["__all__"] = round(min(cap, (ok + k * prior) / (ok + bad + k)), 4)
     return dict(rel)

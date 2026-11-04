@@ -176,6 +176,19 @@ Mục này đo hai thứ:
 G4 (XiYan SQL) được chạy trên **mọi** câu (`DATAMATE_G4_SCOPE=all`). Lần trước nó chỉ chạy khi G1 không trả lời được,
 nên không có số đo nào cho G4. Thời gian (ước lượng, chưa đo): khoảng 1–2 giờ cho cả hai cấu hình LLM trên A100.
 """)
+md("""
+**Cập nhật sau lần nộp 0,777** (bản LoRA thấp hơn bản rule-only). Code mới sửa ba lỗi:
+1. Bộ chọn tính G2 và G3 (cùng một LLM) là hai phiếu, nên chúng thay 73 đáp án G1 không bị đánh dấu nghi ngờ. Giờ mọi
+   route của cùng một LLM (G2, G3, G4, G_select) là **một** phiếu, và LLM **không được thay** một đáp án G1 không bị
+   đánh dấu: kết quả là đáp án G1, hoặc bỏ trống nếu LLM phản đối mạnh.
+2. `unanswerable` của riêng LLM không còn thay đáp án số của G1. Độ tin cậy của các khoá `unanswerable` co về 0,5
+   thay vì 0,9 (train chỉ có 21 câu loại này).
+3. G4 không đọc được SQL của adapter (adapter viết `SELECT ...` rồi đóng ```` ``` ````, và dấu này bị giữ lại trong SQL),
+   nên lần trước adapter không có ứng viên G4 nào. Đáp án SQL giờ cần ít nhất 2 lần thực thi cho cùng kết quả.
+
+Ô dưới tự chạy lại `noisy_lora`, vì G4 giờ chạy được. `noisy_rule` và `noisy_base` được giữ: log cũ vẫn chấm lại được.
+**Chỉ muốn thử bước 1, không dùng GPU:** bỏ qua ô dưới, chạy ô validate (ô tiếp theo), rồi ô 7a.
+""")
 code("""
 import re, json, shutil
 os.makedirs(EVAL, exist_ok=True)
@@ -183,30 +196,36 @@ NOISY = f"/content/noisy_fold{HOLDOUT_FOLD}"   # đĩa máy Colab (Drive không 
 if not os.path.exists(f"{NOISY}/questions.jsonl"):
     !cd {REPO} && python scripts/make_noisy_split.py data/train {NOISY} --fold {HOLDOUT_FOLD}
 LLM_EVAL = "DATAMATE_G4_SCOPE=all DATAMATE_G4_MAX=1000"
-def run(tag, extra, env=""):
+def run(tag, extra, env="", version=""):
     d = f"{EVAL}/{tag}"
     cmd = f"cd {REPO} && {env} python -m datamate.predict --data {NOISY} {extra} --out {d}/submission.jsonl"
-    done = f"{d}/cmd.txt"                      # chạy lại khi lệnh thay đổi; bỏ qua nếu đã chạy xong đúng lệnh này
-    if not (os.path.exists(done) and open(done).read() == cmd):
+    sig = cmd + (f"  # {version}" if version else "")
+    done = f"{d}/cmd.txt"                      # chạy lại khi lệnh (hoặc version) đổi; bỏ qua nếu đã chạy xong đúng như vậy
+    if not (os.path.exists(done) and open(done).read() == sig):
         shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
         print("đang chạy", tag, "...")
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         open(f"{d}/predict.log", "w").write(r.stderr)
         if r.returncode != 0:
             print(r.stderr[-3000:]); raise RuntimeError(f"{tag}: predict lỗi, xem log ở trên")
-        open(done, "w").write(cmd)
+        open(done, "w").write(sig)
     m = re.findall(r"PA=([-0-9.]+) (.*)", open(f"{d}/predict.log").read())
     print(f"{tag:12s} PA = {m[-1][0]}  {m[-1][1]}" if m else f"{tag}: không thấy PA trong log")
 if PHASE == "A":
     run("noisy_rule", "--llm none")
     run("noisy_base", f"--llm vllm --model {BASE} {VLLM_FLAGS}", LLM_EVAL)
-    run("noisy_lora", f"--llm vllm --model {BASE} --lora {RUN}/adapter_bf16 {VLLM_FLAGS}", LLM_EVAL)
+    run("noisy_lora", f"--llm vllm --model {BASE} --lora {RUN}/adapter_bf16 {VLLM_FLAGS}", LLM_EVAL,
+        version="g4-sql-extract-fix")         # lần trước G4 của adapter không đọc được SQL nào
 """)
 code("""
 # Chấm từng generator, và hiệu chuẩn độ tin cậy G2-G4 / G_select trên shop chưa thấy (chỉ dùng nhãn train).
 # reliability_phaseA.json = reliability gốc của repo (giữ G1_rule) + phần LLM vừa đo. Lần chạy trước ghi đè mất G1_rule,
 # nên file cũ bị xoá và tạo lại.
+import re, json, shutil
 REL = f"{WORK}/reliability_phaseA.json"
+NOISY = f"/content/noisy_fold{HOLDOUT_FOLD}"          # (ô này chạy được cả khi bỏ qua ô chạy ở trên: chỉ cần CPU)
+if PHASE == "A" and not os.path.exists(f"{NOISY}/questions.jsonl"):
+    !cd {REPO} && python scripts/make_noisy_split.py data/train {NOISY} --fold {HOLDOUT_FOLD}
 if PHASE == "A":
     !cd {REPO} && git checkout -- artifacts/reliability.json
     if os.path.exists(REL):
@@ -268,16 +287,43 @@ lời được, hoặc trả lời nhưng tự đánh dấu là nghi ngờ; đâ
 Bản nhiễu vẫn được làm từ train, nên nó chỉ là ước lượng. **Điểm thật duy nhất trên public là leaderboard.**
 """)
 
-md("## 7. Tạo `submission.jsonl` cho public test bằng model fine-tune")
+md("""
+## 7. Tạo `submission.jsonl` cho public test bằng model fine-tune
+
+- **7a (chỉ CPU, khoảng 1 phút):** áp bộ chọn mới lên lần chạy public đã có, không chạy lại LLM. Kết quả là file nộp
+  của **bước 1** (bộ chọn mới; lần chạy cũ không có G4). Dòng `--legacy` phải in `same_as_logged_final 1000`: tức là
+  replay dựng lại đúng lần chạy cũ, nên file mới chỉ khác ở những chỗ bộ chọn mới quyết định khác.
+- **7b (GPU, khoảng 15 phút):** chạy lại toàn bộ với code mới (bước 1 + 2: bộ chọn mới và G4 đã sửa). Ô này tự chạy
+  lại khi reliability hoặc code thay đổi.
+
+Mỗi file nên nộp **một lần** lên leaderboard, và so với bản rule-only. Đừng thử đi thử lại theo điểm public.
+""")
 code("""
+# 7a. Bộ chọn mới trên lần chạy public trước (không cần GPU)
 PUBD = f"{WORK}/public_phase{PHASE}"
-PUB = f"{PUBD}/submission.jsonl"
 REL = f"{WORK}/reliability_phaseA.json"
-assert os.path.exists(REL), "Chưa có reliability_phaseA.json: chạy mục 6 ở pha A trước"
+REPLAY = f"{WORK}/public_phase{PHASE}_replay/submission.jsonl"
+assert os.path.exists(REL), "Chưa có reliability_phaseA.json: chạy ô validate ở mục 6 trước"
+if os.path.isdir(f"{PUBD}/logs"):
+    OLD_REL = f"{PUBD}/reliability_used.json" if os.path.exists(f"{PUBD}/reliability_used.json") else REL
+    print("== kiểm tra: bộ chọn cũ trên log cũ phải ra đúng các đáp án đã ghi")
+    !cd {REPO} && python scripts/replay_selector.py {PUBD}/logs --data data/public_test --reliability {OLD_REL} --legacy
+    print("== bộ chọn mới")
+    !cd {REPO} && python scripts/replay_selector.py {PUBD}/logs --data data/public_test --reliability {REL} --out {REPLAY} --compare submissions/public_test_rule_only.jsonl
+    !cd {REPO} && python scripts/check_submission.py {REPLAY} data/public_test/questions.jsonl
+else:
+    print("Chưa có lần chạy public nào ở", PUBD, "- chạy 7b")
+""")
+code("""
+# 7b. Chạy lại public với code mới (GPU)
+PUB = f"{PUBD}/submission.jsonl"
 rel_now = open(REL, encoding="utf-8").read()
-used = f"{PUBD}/reliability_used.json"
-if not (os.path.exists(PUB) and os.path.exists(used) and open(used, encoding="utf-8").read() == rel_now):
-    # Tạo lại khi reliability thay đổi. File của lần trước được tạo với reliability thiếu G1_rule; nó được giữ ở *_prev.
+head = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+used, ver = f"{PUBD}/reliability_used.json", f"{PUBD}/code_version.txt"
+fresh = (os.path.exists(PUB) and os.path.exists(used) and open(used, encoding="utf-8").read() == rel_now
+         and os.path.exists(ver) and open(ver).read() == head)
+if not fresh:
+    # Tạo lại khi reliability hoặc code thay đổi. Lần chạy trước được giữ ở *_prev (chạy 7a trước nếu muốn replay nó).
     if os.path.isdir(PUBD):
         shutil.rmtree(PUBD + "_prev", ignore_errors=True); shutil.move(PUBD, PUBD + "_prev")
     os.makedirs(PUBD)
@@ -289,10 +335,12 @@ if not (os.path.exists(PUB) and os.path.exists(used) and open(used, encoding="ut
     if r.returncode != 0:
         print(r.stderr[-3000:]); raise RuntimeError("predict trên public lỗi, xem log ở trên")
     open(used, "w", encoding="utf-8").write(rel_now)
+    open(ver, "w").write(head)
 !cd {REPO} && python scripts/check_submission.py {PUB} data/public_test/questions.jsonl
 """)
 code("""
-# So với bản rule-only đã nộp (PA public 0,561), không cần nhãn: những câu khác nhau là chỗ điểm leaderboard có thể đổi.
+# So với bản rule-only (submissions/public_test_rule_only.jsonl), không cần nhãn: những câu khác nhau là chỗ điểm
+# leaderboard có thể đổi. Với code mới, số câu "changed" (LLM thay đáp án G1) phải rất nhỏ.
 # Mỗi khác biệt ghi vào diff_vs_rule_only.jsonl để đọc bằng mắt. Đừng sửa luật / prompt theo từng câu public.
 !cd {REPO} && python scripts/compare_submissions.py submissions/public_test_rule_only.jsonl {PUB} --questions data/public_test/questions.jsonl --logs {PUBD}/logs --out {PUBD}/diff_vs_rule_only.jsonl
 """)
@@ -352,6 +400,9 @@ PUB = f"{WORK}/public_phase{PHASE}/submission.jsonl"
 os.makedirs(f"{REPO}/submissions", exist_ok=True)
 if os.path.exists(PUB):
     shutil.copy(PUB, f"{REPO}/submissions/public_test_lora_phase{PHASE.lower()}.jsonl")
+REPLAY = f"{WORK}/public_phase{PHASE}_replay/submission.jsonl"
+if os.path.exists(REPLAY):
+    shutil.copy(REPLAY, f"{REPO}/submissions/public_test_lora_phase{PHASE.lower()}_replay.jsonl")
 res_path = f"{WORK}/eval_phaseA/results.json"
 results = json.load(open(res_path)) if os.path.exists(res_path) else {}
 counts = {}

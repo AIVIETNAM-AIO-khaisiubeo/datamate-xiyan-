@@ -134,6 +134,29 @@ Adapter, dữ liệu và log đánh giá đều nằm trên Drive (`MyDrive/data
    cuối cùng là `XONG: https://github.com/.../tree/colab-finetune-phasea`. Nếu không thấy dòng `XONG`, ô đã dừng
    ở một bước kèm thông báo lỗi.
 
+## 6b. Sau lần nộp 0,777 (bản LoRA thấp hơn bản rule-only)
+
+Nguyên nhân nằm ở cách kết hợp, không phải ở adapter. So file LoRA với file rule-only (116/1000 câu khác nhau):
+
+- **73 câu** LLM thay một đáp án G1 không bị đánh dấu nghi ngờ. G2 và G3 là cùng một LLM nhưng được tính như hai phiếu.
+- **46 câu** đang có số liệu bị đổi thành `unanswerable`. Độ tin cậy của khoá `unanswerable` gần như chỉ là giá trị mặc
+  định 0,9, vì train có rất ít câu loại này.
+- **G4 không có ứng viên nào** với adapter. Adapter viết `SELECT ...` rồi đóng ```` ``` ````, và dấu đó bị giữ lại trong
+  SQL, nên mọi câu SQL đều lỗi cú pháp.
+
+Code mới sửa cả ba (xem `datamate/select/selector.py`). Không cần train lại. Thứ tự chạy:
+
+1. Ô 1, mục 2, mục 3. Bỏ qua mục 4 và 5.
+2. **Chỉ bước 1, không GPU:** ô validate của mục 6 (tạo lại `reliability_phaseA.json` từ log cũ), rồi ô **7a**. Ô 7a
+   áp bộ chọn mới lên lần chạy public cũ và ghi `public_phaseA_replay/submission.jsonl`. Dòng `--legacy` phải in
+   `same_as_logged_final 1000`.
+3. **Bước 1 + 2 (GPU):** ô chạy của mục 6 (tự chạy lại `noisy_lora` vì G4 giờ chạy được, khoảng 1 giờ), ô validate,
+   bảng kết quả, rồi ô **7b** (khoảng 15 phút).
+4. Mục 8 đẩy cả hai file lên GitHub.
+
+Nộp mỗi file **một lần** và ghi điểm vào `docs/RESULTS.md`: file 7a đo riêng tác dụng của bộ chọn mới, file 7b đo thêm
+G4. Trên public, phần lệch so với bản rule-only giờ chỉ còn ở những câu G1 bỏ trống hoặc tự đánh dấu nghi ngờ.
+
 ## 7. Lưu ý về luật và chi phí
 
 - **Chỉ dữ liệu train** được dùng để fine-tune và hiệu chuẩn; notebook không đọc nhãn public (public không có nhãn),

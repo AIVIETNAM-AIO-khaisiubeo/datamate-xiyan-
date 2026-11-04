@@ -305,15 +305,23 @@ class SQLGenerator:
 
 
 def extract_sql(text: str) -> Optional[str]:
+    """SQL from a model answer.  The prompts end with an opened ```sql fence, so a fine-tuned model answers with the
+    SQL followed by the closing fence only ("SELECT ...\\n```"); a base model often writes the whole fenced block.
+    The closing fence used to stay in the SQL, so every SQL of the fine-tuned model failed to parse (no G4 at all)."""
     if not text:
         return None
     if "</think>" in text:
         text = text.split("</think>", 1)[1]
-    m = re.search(r"```sql\s*(.+?)```", text, re.S | re.I)
-    if m:
-        return m.group(1).strip().rstrip(";")
-    m = re.search(r"(select|with)\b.+", text, re.S | re.I)
-    return m.group(0).strip().rstrip(";") if m else None
+    m = re.search(r"```(?:sql|duckdb)?[ \t]*\n?(.+?)```", text, re.S | re.I)
+    body = m.group(1) if m and re.search(r"\b(select|with)\b", m.group(1), re.I) else None
+    if body is None:
+        m = (re.search(r"^[ \t]*(select|with)\b.+", text, re.S | re.I | re.M)
+             or re.search(r"\b(select|with)\b.+", text, re.S | re.I))
+        if not m:
+            return None
+        body = m.group(0).split("```", 1)[0]
+    sql = body.strip().rstrip(";").strip()
+    return sql or None
 
 
 def run_sql(sql: str, views: Dict, timeout_rows: int = 100000):

@@ -39,6 +39,20 @@ Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 
 
 ## 2. Public test (1.000 câu, 14 shop) — **không có đáp án**
 
+### Lịch sử nộp leaderboard
+
+| Bản | Hệ thống | Điểm BTC |
+|---|---|---:|
+| 1 | G1 rule-only | 0.561 |
+| 2 | G1 rule-only sau phân tích lỗi public không nhãn (`submissions/public_test_rule_only.jsonl`) | cao hơn 0.777 (chưa ghi số) |
+| 3 | G1 + Qwen3-14B + LoRA pha A (`colab-finetune-phasea`) | **0.777** |
+
+Bản 3 khác bản 2 ở 116 câu: 73 câu LLM thay đáp án G1 không bị đánh dấu, 46 câu có số liệu bị đổi thành
+`unanswerable`, và G4 không có ứng viên nào (SQL của adapter dư dấu đóng ```` ``` ````). Sửa trong bộ chọn
+(`datamate/select/selector.py`: một phiếu cho mỗi LLM, G1 không bị đánh dấu thì không bị thay, `unanswerable` của riêng
+LLM không thay đáp án số) và trong `extract_sql`. Hai bản tiếp theo: replay bộ chọn mới trên log của bản 3 (chỉ CPU), rồi
+chạy lại toàn bộ với G4 đã sửa.
+
 | | Bản nộp 1 (điểm BTC **0.561**) | Bản 2 (hiện tại) |
 |---|---:|---:|
 | Trả lời giá trị | 850 | 920 |
