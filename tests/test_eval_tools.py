@@ -138,3 +138,22 @@ def test_notebook_has_a_t4_profile():
     import datamate.predict as pr
     text = open(pr.__file__, encoding="utf-8").read()
     assert all(f in text for f in ("--dtype", "--enforce-eager", "--require-llm"))
+
+
+def test_notebook_t4_memory_and_recovery_cells():
+    nb = json.load(open(os.path.join(ROOT, "notebooks", "colab_finetune.ipynb"), encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "--max-num-seqs 16 --max-batched-tokens 2048" in src          # room for the KV cache on 15 GB
+    assert "git lfs smudge" not in src and '"lfs", "smudge"' in src       # adapter fetched from GitHub if not on Drive
+    assert "def explain(" in src and "os.path.ismount" in src             # root cause shown; Drive really mounted
+    assert 'not os.path.exists(f"{AWQ_DIR}/config.json")' not in src      # download always resumed / verified
+    import datamate.predict as pr
+    text = open(pr.__file__, encoding="utf-8").read()
+    assert "--max-num-seqs" in text and "--max-batched-tokens" in text
+
+
+def test_count_params_fails_on_a_directory_without_weights():
+    with tempfile.TemporaryDirectory() as d:
+        json.dump({"model_type": "qwen3"}, open(os.path.join(d, "config.json"), "w"))
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "count_params.py"), d], capture_output=True, text=True)
+        assert r.returncode == 2 and "NO WEIGHTS" in r.stdout

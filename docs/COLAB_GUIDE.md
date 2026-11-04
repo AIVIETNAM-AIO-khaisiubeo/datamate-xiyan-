@@ -166,7 +166,7 @@ G4. Trên public, phần lệch so với bản rule-only giờ chỉ còn ở nh
 | Train (mục 4–5) | có | **bỏ qua**: 14B trên T4 mất hàng chục giờ, và không có bf16 | bỏ qua |
 | Model suy luận | `Qwen/Qwen3-14B` (FP8 nếu < 45 GB) | **`Qwen/Qwen3-14B-AWQ`**: cùng model, lượng tử 4-bit (khoảng 10 GB), chạy fp16 | — |
 | Adapter | `lora_phaseA/adapter_bf16` | cùng adapter đó, áp lên bản AWQ | — |
-| Mục 6, chạy | rule, base, lora; G4 trên mọi câu | rule; base giữ log A100; lora chạy lại; G4 trên `T4_G4_MAX` câu mỗi shop | chỉ rule |
+| Mục 6, chạy | rule, base, lora; G4 trên mọi câu | rule; base chỉ khi có log A100 hoặc `T4_RUN_BASE = True`; lora chạy lại; G4 trên `T4_G4_MAX` câu mỗi shop | chỉ rule |
 | Mục 6, validate; 7a replay | có | có | **có** (chỉ CPU) |
 | 7b, public | khoảng 15 phút | khoảng 1,5–3 giờ (ước lượng) | không |
 
@@ -177,9 +177,22 @@ Lưu ý khi chạy trên T4:
   (A100) với `lora` (T4) ở mục 6 chỉ là gần đúng.
 - Mọi lệnh LLM chạy với `--require-llm`. Nếu vLLM không khởi động được trên T4, ô **dừng kèm lỗi**, thay vì lặng lẽ
   chạy rule-only như trước.
-- Nếu vLLM báo hết bộ nhớ (`CUDA out of memory`, `No available memory for the cache blocks`): ở ô GPU, đổi
-  `--max-len 8192` thành `--max-len 6144`, rồi chạy lại.
+- Ô **"Kiểm tra nhanh LLM"** (cuối mục 3) khởi động vLLM và trả lời 3 câu, mất 5–10 phút. Chạy nó trước mọi lần chạy
+  dài. Khi lỗi, mọi ô chạy LLM in **các dòng lỗi gốc** trong log (vLLM in nguyên nhân ở giữa log, không ở cuối).
+- Trên T4, vLLM dùng `--max-num-seqs 16 --max-batched-tokens 2048 --gpu-util 0.94`, để còn đủ KV cache cho một câu
+  8192 token. Nếu vẫn báo thiếu bộ nhớ (`out of memory`, `KV cache is needed, which is larger than the available`):
+  ở ô GPU, đổi `--max-len 8192` thành `--max-len 6144`, rồi chạy lại ô GPU và ô kiểm tra nhanh.
+- Nếu dòng lỗi nói về *attention backend*: đặt `VLLM_ATTN = "TRITON_ATTN"` ở ô 1, rồi chạy lại từ ô GPU.
 - Thứ tự rẻ nhất: ô validate + **7a** (CPU, vài phút) cho file nộp bước 1. Sau đó mới đến `noisy_lora` và 7b trên T4.
+
+**Lần chạy T4 đầu tiên báo `Engine core initialization failed`.** Có hai nguyên nhân thấy được trong output:
+1. Ô đếm tham số in `0.000B`: thư mục Qwen3-14B-AWQ không có file trọng số, có lẽ do lần tải trước bị ngắt. Ô cũ chỉ kiểm
+   tra `config.json`, nên không tải tiếp. Ô mới luôn gọi `snapshot_download` (tải tiếp phần còn thiếu) và kiểm tra đủ
+   các file trọng số.
+2. Notebook không thấy adapter, cũng không thấy log của các lần chạy trước. Drive đang mount không phải Drive của lần
+   chạy A100: hoặc ô mount chưa chạy, hoặc đây là tài khoản Google khác. Ô mount giờ kiểm tra Drive đã thật sự được
+   nối. Ô sau ô clone liệt kê những gì đang thiếu, và tự lấy adapter từ nhánh `colab-finetune-phasea` trên GitHub
+   (khoảng 0,26 GB băng thông Git LFS). Log của lần nộp 0,777 (cho ô 7a) chỉ có trên Drive cũ: ô đó chỉ ra cách lấy.
 
 ## 7. Lưu ý về luật và chi phí
 

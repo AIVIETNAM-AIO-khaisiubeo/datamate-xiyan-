@@ -66,8 +66,10 @@ LR = 1e-4
 OUT_BRANCH = f"colab-finetune-phase{PHASE.lower()}"   # nhánh GitHub nhận kết quả (không đẩy thẳng lên main)
 AWQ_REPO = "Qwen/Qwen3-14B-AWQ"    # T4: bản lượng tử 4-bit chính thức của Qwen3-14B (cùng kiến trúc, cùng 14,8B tham số)
 T4_G4_MAX = 20                     # T4: số câu mỗi shop chạy G4 khi đánh giá (A100: mọi câu); G4 là phần chậm nhất
+T4_RUN_BASE = False                # T4: có chạy lại model gốc (không adapter) ở mục 6 không; thêm 2-3 giờ
+VLLM_ATTN = ""                     # để trống; chỉ đặt (ví dụ "TRITON_ATTN") nếu lỗi vLLM nói về attention backend
 # ---------------------------------------------------------------------------------
-import os
+import json, os, re, shutil, subprocess, time
 WORK = "/content/drive/MyDrive/datamate"            # nằm trên Drive: còn nguyên khi mất kết nối
 REPO = "/content/datamate"
 BASE = "/content/models/qwen3-14b"
@@ -81,6 +83,19 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["USE_TF"] = "0"                # transformers không nạp TensorFlow của Colab (tránh log "cuda drivers")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import sys
+def explain(log, n=25):
+    \"\"\"In nguyên nhân gốc của một lỗi: vLLM in nó ở giữa log (tiến trình EngineCore), không ở cuối.\"\"\"
+    pat = re.compile(r"(Error|Exception|error:|out of memory|not supported|No available|Cannot find|"
+                     r"requires|capability|insufficient|larger than)", re.I)
+    seen, keep = set(), []
+    for line in log.splitlines():
+        s = line.strip()
+        if pat.search(s) and s not in seen and not s.startswith(("File ", "Traceback", "During handling")):
+            seen.add(s); keep.append(s[:400])
+    print("---- các dòng lỗi trong log (gửi phần này nếu cần hỏi) ----")
+    print("\\n".join(keep[:n]) or "(không tìm thấy)")
+    print("---- cuối log ----")
+    print(log[-1500:])
 print(PHASE, DATA, RUN, "| Python", sys.version.split()[0])
 """)
 
@@ -103,22 +118,33 @@ if PROFILE == "bf16":
     INFER = BASE
     VLLM_FLAGS = "--tp 1 --max-len 8192 --gpu-util 0.90" + (" --quant fp8" if mem < 45000 else "")
 elif PROFILE == "t4":
-    # 16 GB, không bf16: model AWQ 4-bit (khoảng 10 GB) ở fp16, không CUDA graph để dành bộ nhớ cho KV cache
+    # 16 GB, không bf16: model AWQ 4-bit (khoảng 10 GB) ở fp16, không CUDA graph. Giới hạn số chuỗi và số token mỗi
+    # bước để vLLM giữ ít bộ nhớ cho activation, còn đủ KV cache cho một câu 8192 token (khoảng 1,3 GB).
     INFER = AWQ_DIR
-    VLLM_FLAGS = "--tp 1 --max-len 8192 --gpu-util 0.92 --quant awq --dtype half --enforce-eager"
+    VLLM_FLAGS = ("--tp 1 --max-len 8192 --gpu-util 0.94 --quant awq --dtype half --enforce-eager"
+                  " --max-num-seqs 16 --max-batched-tokens 2048")
 else:
     INFER, VLLM_FLAGS = None, ""
 if INFER:
     VLLM_FLAGS += " --require-llm"   # LLM không khởi động được thì dừng hẳn, không lặng lẽ chạy rule-only
+if VLLM_ATTN:
+    os.environ["VLLM_ATTENTION_BACKEND"] = VLLM_ATTN
 print(f"GPU: {name} ({mem} MiB) | PROFILE = {PROFILE} | train: {CAN_TRAIN} | model suy luận: {INFER}")
 print("vLLM flags:", VLLM_FLAGS or "-")
 if PROFILE == "t4":
-    print("T4: bỏ qua mục 4-5 (train). Dùng adapter đã có trên Drive:", os.path.exists(f"{RUN}/adapter_bf16/adapter_config.json"))
+    print("T4: bỏ qua mục 4-5 (train) và dùng adapter đã train. Ô sau ô clone kiểm tra adapter có trên Drive không.")
 """)
 code("""
 from google.colab import drive
+if not os.path.ismount("/content/drive") and os.path.isdir("/content/drive") and os.listdir("/content/drive"):
+    # /content/drive đã bị ghi khi Drive chưa nối (ví dụ chạy mục 6 trước ô này): dời đi, nếu không thì không mount được
+    bak = f"/content/drive_local_{int(time.time())}"
+    shutil.move("/content/drive", bak)
+    print("Thư mục /content/drive cục bộ (không phải Drive) được dời sang", bak)
 drive.mount("/content/drive")
+assert os.path.ismount("/content/drive"), "Google Drive chưa được nối: chạy lại ô này và cho phép truy cập"
 os.makedirs(WORK, exist_ok=True)
+print("Drive:", WORK, "có:", sorted(os.listdir(WORK))[:12])
 """)
 code("""
 # Colab KHÔNG có sẵn git-lfs. Thiếu nó, adapter 0,26 GB bị commit như file thường và GitHub từ chối (giới hạn 100 MB).
@@ -131,6 +157,46 @@ else:
     # (-f: bỏ thay đổi cục bộ trên file của repo; mọi kết quả nằm trên Drive)
     !cd {REPO} && git fetch -q origin && git checkout -q -f -B {BRANCH} origin/{BRANCH}
 !cd {REPO} && git lfs install --local && git log --oneline -1
+""")
+code("""
+# Những gì các mục sau cần, và đã có trên Drive chưa
+ADAPTER_SRC_BRANCH = "colab-finetune-phasea"     # nhánh GitHub mà lần chạy A100 đã đẩy adapter lên (Git LFS)
+def adapter_ok():
+    f = f"{ADAPTER}/adapter_model.safetensors"
+    return os.path.exists(f"{ADAPTER}/adapter_config.json") and os.path.exists(f) and os.path.getsize(f) > 1_000_000
+need = {
+    "adapter lora_phaseA/adapter_bf16 (mục 6-7 với LoRA)": adapter_ok(),
+    "log public của lần nộp 0,777: public_phaseA/logs (ô 7a)": os.path.isdir(f"{WORK}/public_phase{PHASE}/logs"),
+    "log đánh giá model gốc: eval_phaseA/noisy_base/logs": os.path.isdir(f"{EVAL}/noisy_base/logs"),
+    "log đánh giá adapter: eval_phaseA/noisy_lora/logs": os.path.isdir(f"{EVAL}/noisy_lora/logs"),
+}
+for k, v in need.items():
+    print("có    " if v else "THIẾU ", k)
+if not adapter_ok() and PROFILE != "cpu":
+    # adapter không có trên Drive này: lấy bản đã đẩy lên GitHub (khoảng 0,26 GB băng thông Git LFS)
+    print(f"\\nLấy adapter từ nhánh {ADAPTER_SRC_BRANCH} trên GitHub ...")
+    os.makedirs(ADAPTER, exist_ok=True)
+    ref = f"refs/remotes/origin/{ADAPTER_SRC_BRANCH}"
+    subprocess.run(f"cd {REPO} && git fetch -q origin +refs/heads/{ADAPTER_SRC_BRANCH}:{ref}", shell=True, check=True)
+    files = subprocess.run(["git", "-C", REPO, "ls-tree", "--name-only", ref, "models/adapter/"],
+                           capture_output=True, text=True, check=True).stdout.split()
+    for p in files:
+        blob = subprocess.run(["git", "-C", REPO, "show", f"{ref}:{p}"], capture_output=True, check=True).stdout
+        dst = f"{ADAPTER}/{os.path.basename(p)}"
+        with open(dst + ".part", "wb") as fo:
+            if blob.startswith(b"version https://git-lfs"):     # con trỏ LFS: tải nội dung thật
+                subprocess.run(["git", "-C", REPO, "lfs", "smudge", p], input=blob, stdout=fo, check=True)
+            else:
+                fo.write(blob)
+        os.replace(dst + ".part", dst)
+    print("adapter:", sorted(os.listdir(ADAPTER)), "| OK" if adapter_ok() else "| VẪN THIẾU")
+if not need["log public của lần nộp 0,777: public_phaseA/logs (ô 7a)"]:
+    print(\"\"\"
+Không có log của lần nộp 0,777 trên Drive này, nên ô 7a (replay, chỉ CPU) không chạy được ở đây.
+- Nếu lần chạy A100 dùng một tài khoản Google khác: mở notebook này bằng tài khoản đó, chọn runtime CPU (không cần GPU),
+  rồi chạy ô 1, mục 2, mục 3 và ô validate + ô 7a. Hoặc chia sẻ thư mục MyDrive/datamate của tài khoản đó cho tài
+  khoản này, rồi "Add shortcut to My Drive" với tên datamate.
+- Nếu không: bỏ qua 7a, chạy mục 6 (noisy_lora) rồi 7b trên GPU này.\"\"\")
 """)
 
 md("## 3. Cài thư viện và tải model")
@@ -153,15 +219,53 @@ Phải thấy `transformers 4.57.6 | trl 0.24.0 | peft 0.17.1`, và (khi có GPU
 """)
 code("""
 from huggingface_hub import snapshot_download
-if PROFILE == "bf16" and not os.path.exists(f"{BASE}/config.json"):
+# Luôn gọi snapshot_download: file đã tải đủ thì bỏ qua, file tải dở thì tải tiếp. (Trước đây ô này chỉ kiểm tra
+# config.json, nên một lần tải bị ngắt để lại thư mục không có trọng số, và vLLM không khởi động được.)
+if PROFILE == "bf16":
     snapshot_download("Qwen/Qwen3-14B", local_dir=BASE, ignore_patterns=["*.pth", "original/*"])
-if PROFILE == "t4" and not os.path.exists(f"{AWQ_DIR}/config.json"):
+if PROFILE == "t4":
     snapshot_download(AWQ_REPO, local_dir=AWQ_DIR)
-ADAPTER = f"{RUN}/adapter_bf16"
-ADAPTER_ARG = ADAPTER if os.path.exists(f"{ADAPTER}/adapter_config.json") else ""
 if INFER:
+    idx = f"{INFER}/model.safetensors.index.json"
+    if os.path.exists(idx):
+        shards = sorted(set(json.load(open(idx))["weight_map"].values()))
+        missing = [s for s in shards if not os.path.exists(f"{INFER}/{s}")]
+        assert not missing, f"Thiếu file trọng số {missing}: chạy lại ô này để tải tiếp"
+        print(f"{len(shards)} file trọng số, {sum(os.path.getsize(f'{INFER}/{s}') for s in shards) / 1e9:.1f} GB")
     # luật <= 15B: model suy luận + adapter. Với AWQ, mỗi số int32 đóng gói 8 trọng số 4-bit; script đếm đúng điều đó.
-    !cd {REPO} && python scripts/count_params.py {INFER} {ADAPTER_ARG}
+    ADAPTER_ARG = ADAPTER if os.path.exists(f"{ADAPTER}/adapter_config.json") else ""
+    r = subprocess.run(f"cd {REPO} && python scripts/count_params.py {INFER} {ADAPTER_ARG}", shell=True,
+                       capture_output=True, text=True)
+    print(r.stdout + r.stderr)
+    assert r.returncode == 0, "Đếm tham số lỗi (thiếu trọng số hoặc quá 15B): xem dòng ở trên"
+""")
+
+md("""
+### Kiểm tra nhanh LLM (3 câu)
+
+Khởi động vLLM với đúng model, adapter và cờ của các mục sau, rồi trả lời 3 câu train. Mất khoảng 5–10 phút trên T4
+(phần lớn là nạp model). Nếu lỗi, ô in các dòng lỗi gốc trong log của vLLM. Chạy ô này trước mọi lần chạy dài.
+""")
+code("""
+if not INFER:
+    print("Không có GPU: bỏ qua")
+else:
+    lora_arg = f"--lora {ADAPTER}" if adapter_ok() else ""
+    cmd = (f"cd {REPO} && python -m datamate.predict --data data/train --only biz_101 --limit 3 --llm vllm "
+           f"--model {INFER} {lora_arg} {VLLM_FLAGS} --out /content/smoke/submission.jsonl")
+    t0 = time.time()
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    open("/content/smoke.log", "w").write(r.stderr)
+    if r.returncode != 0:
+        explain(r.stderr)
+        raise RuntimeError("LLM chưa chạy được: xem các dòng lỗi ở trên (log đầy đủ: /content/smoke.log)")
+    print("\\n".join(l for l in r.stderr.splitlines() if l.startswith(("[llm]", "[datamate]"))))
+    gens = {}
+    for f in os.listdir("/content/smoke/logs"):
+        for c in json.load(open(f"/content/smoke/logs/{f}", encoding="utf-8"))["candidates"]:
+            gens[c["gen"]] = gens.get(c["gen"], 0) + 1
+    print(f"LLM OK sau {time.time() - t0:.0f}s | ứng viên theo generator: {gens} | adapter: {bool(lora_arg)}")
+    assert any(g != "G1_rule" for g in gens), "vLLM chạy nhưng không có ứng viên LLM nào: gửi /content/smoke.log"
 """)
 
 md("""
@@ -270,7 +374,8 @@ def run(tag, extra, env="", version="", keep_old=False):
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         open(f"{d}/predict.log", "w").write(r.stderr)
         if r.returncode != 0:
-            print(r.stderr[-3000:]); raise RuntimeError(f"{tag}: predict lỗi, xem log ở trên")
+            explain(r.stderr)
+            raise RuntimeError(f"{tag}: predict lỗi, xem các dòng lỗi ở trên (log đầy đủ: {d}/predict.log)")
         open(done, "w").write(sig)
     m = re.findall(r"PA=([-0-9.]+) (.*)", open(f"{d}/predict.log").read())
     print(f"{tag:12s} PA = {m[-1][0]}  {m[-1][1]}" if m else f"{tag}: không thấy PA trong log")
@@ -279,8 +384,12 @@ if PHASE == "A":
     if PROFILE == "cpu":
         print("Không có GPU: dùng các lần chạy LLM đã có trên Drive. Chạy tiếp ô validate.")
     else:
-        # model gốc: giữ lần chạy đã có (A100) nếu có, vì code mới không đổi gì ở đầu ra của nó ngoài phần chọn
-        run("noisy_base", f"--llm vllm --model {INFER} {VLLM_FLAGS}", LLM_EVAL, keep_old=True)
+        # model gốc: giữ lần chạy đã có (A100) nếu có. Trên T4 chỉ chạy lại khi T4_RUN_BASE = True (thêm 2-3 giờ).
+        if PROFILE == "bf16" or T4_RUN_BASE or os.path.isdir(f"{EVAL}/noisy_base/logs"):
+            run("noisy_base", f"--llm vllm --model {INFER} {VLLM_FLAGS}", LLM_EVAL, keep_old=True)
+        else:
+            print("noisy_base: bỏ qua trên T4 (không có log cũ; đặt T4_RUN_BASE = True nếu muốn so base với lora)")
+        assert adapter_ok(), "Không có adapter: xem ô kiểm tra sau ô clone (mục 2)"
         run("noisy_lora", f"--llm vllm --model {INFER} --lora {ADAPTER} {VLLM_FLAGS}", LLM_EVAL,
             version="g4-sql-extract-fix")     # lần trước G4 của adapter không đọc được SQL nào
 """)
@@ -295,15 +404,19 @@ if PHASE == "A" and not os.path.exists(f"{NOISY}/questions.jsonl"):
     !cd {REPO} && python scripts/make_noisy_split.py data/train {NOISY} --fold {HOLDOUT_FOLD}
 if PHASE == "A":
     !cd {REPO} && git checkout -- artifacts/reliability.json
-    if os.path.exists(REL):
-        os.remove(REL)
-    print("===== base")
-    !cd {REPO} && python scripts/validate.py {EVAL}/noisy_base/logs {NOISY}/answers.jsonl --folds 3 --out {EVAL}/validate_base | grep -A12 "per generator"
-    print("===== lora")
-    !cd {REPO} && python scripts/validate.py {EVAL}/noisy_lora/logs {NOISY}/answers.jsonl --folds 3 --out {EVAL}/validate_lora --write-reliability {REL} | grep -A14 "per generator"
-    rel = json.load(open(REL, encoding="utf-8"))
-    assert "G1_rule" in rel, "reliability_phaseA.json thiếu G1_rule"
-    print("reliability_phaseA.json có:", sorted(rel))
+    if os.path.isdir(f"{EVAL}/noisy_base/logs"):
+        print("===== base")
+        !cd {REPO} && python scripts/validate.py {EVAL}/noisy_base/logs {NOISY}/answers.jsonl --folds 3 --out {EVAL}/validate_base | grep -A12 "per generator"
+    if os.path.isdir(f"{EVAL}/noisy_lora/logs"):
+        if os.path.exists(REL):
+            os.remove(REL)                 # tạo lại từ reliability của repo (giữ G1_rule) + phần LLM vừa đo
+        print("===== lora")
+        !cd {REPO} && python scripts/validate.py {EVAL}/noisy_lora/logs {NOISY}/answers.jsonl --folds 3 --out {EVAL}/validate_lora --write-reliability {REL} | grep -A14 "per generator"
+        rel = json.load(open(REL, encoding="utf-8"))
+        assert "G1_rule" in rel, "reliability_phaseA.json thiếu G1_rule"
+        print("reliability_phaseA.json có:", sorted(rel))
+    else:
+        print("Chưa có log noisy_lora: chạy ô chạy ở trên (cần GPU). Đến lúc đó, 7a/7b dùng reliability của repo.")
 """)
 code("""
 def _pa(tag):
@@ -369,8 +482,12 @@ code("""
 # 7a. Bộ chọn mới trên lần chạy public trước (không cần GPU)
 PUBD = f"{WORK}/public_phase{PHASE}"
 REL = f"{WORK}/reliability_phaseA.json"
+REPO_REL = f"{REPO}/artifacts/reliability.json"
+if not os.path.exists(REL):
+    !cd {REPO} && git checkout -- artifacts/reliability.json
+    print("Chưa có reliability_phaseA.json (cần log noisy_lora, mục 6): dùng reliability của repo, LLM chưa hiệu chuẩn")
+    REL = REPO_REL
 REPLAY = f"{WORK}/public_phase{PHASE}_replay/submission.jsonl"
-assert os.path.exists(REL), "Chưa có reliability_phaseA.json: chạy ô validate ở mục 6 trước"
 if os.path.isdir(f"{PUBD}/logs"):
     OLD_REL = f"{PUBD}/reliability_used.json" if os.path.exists(f"{PUBD}/reliability_used.json") else REL
     print("== kiểm tra: bộ chọn cũ trên log cũ phải ra đúng các đáp án đã ghi")
@@ -379,12 +496,19 @@ if os.path.isdir(f"{PUBD}/logs"):
     !cd {REPO} && python scripts/replay_selector.py {PUBD}/logs --data data/public_test --reliability {REL} --out {REPLAY} --compare submissions/public_test_rule_only.jsonl
     !cd {REPO} && python scripts/check_submission.py {REPLAY} data/public_test/questions.jsonl
 else:
-    print("Chưa có lần chạy public nào ở", PUBD, "- chạy 7b")
+    print("Không có log public ở", PUBD, "(xem ô kiểm tra sau ô clone ở mục 2). Bỏ qua 7a, chạy 7b.")
 """)
 code("""
 # 7b. Chạy lại public với code mới (GPU)
+PUBD, REPO_REL = f"{WORK}/public_phase{PHASE}", f"{REPO}/artifacts/reliability.json"
+REL = f"{WORK}/reliability_phaseA.json"
+if not os.path.exists(REL):
+    !cd {REPO} && git checkout -- artifacts/reliability.json
+    print("Chưa có reliability_phaseA.json: dùng reliability của repo (LLM chưa hiệu chuẩn; nên chạy mục 6 trước)")
+    REL = REPO_REL
 PUB = f"{PUBD}/submission.jsonl"
 assert INFER, "Không có GPU: 7b cần GPU (A100/L4/T4). Dùng file của 7a."
+assert adapter_ok(), "Không có adapter: xem ô kiểm tra sau ô clone (mục 2)"
 rel_now = open(REL, encoding="utf-8").read()
 head = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 run_id = f"{head} {INFER} {VLLM_FLAGS}"           # code + model + cờ vLLM của lần chạy
@@ -396,14 +520,16 @@ if not fresh:
     if os.path.isdir(PUBD):
         shutil.rmtree(PUBD + "_prev", ignore_errors=True); shutil.move(PUBD, PUBD + "_prev")
     os.makedirs(PUBD)
-    shutil.copy(REL, f"{REPO}/artifacts/reliability.json")
+    if os.path.abspath(REL) != os.path.abspath(REPO_REL):
+        shutil.copy(REL, REPO_REL)
     print("đang chạy public với", INFER, "...")
     r = subprocess.run(f"cd {REPO} && python -m datamate.predict --data data/public_test --llm vllm --model {INFER} "
                        f"--lora {ADAPTER} {VLLM_FLAGS} --out {PUB}", shell=True, capture_output=True, text=True)
     open(f"{PUBD}/predict.log", "w").write(r.stderr)
     print("\\n".join(l for l in r.stderr.splitlines() if "[datamate]" in l or "[llm]" in l))
     if r.returncode != 0:
-        print(r.stderr[-3000:]); raise RuntimeError("predict trên public lỗi, xem log ở trên")
+        explain(r.stderr)
+        raise RuntimeError(f"predict trên public lỗi, xem các dòng lỗi ở trên (log đầy đủ: {PUBD}/predict.log)")
     open(used, "w", encoding="utf-8").write(rel_now)
     open(ver, "w").write(run_id)
 !cd {REPO} && python scripts/check_submission.py {PUB} data/public_test/questions.jsonl

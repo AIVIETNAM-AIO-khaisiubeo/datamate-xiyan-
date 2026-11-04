@@ -61,15 +61,22 @@ class VLLMBackend(LLMBackend):
     def __init__(self, model_path: str, tensor_parallel_size: int = 2, max_model_len: int = 16384,
                  gpu_memory_utilization: float = 0.88, quantization: Optional[str] = None,
                  enable_thinking: bool = False, dtype: str = "auto", lora_path: Optional[str] = None,
-                 enforce_eager: bool = False):
+                 enforce_eager: bool = False, max_num_seqs: Optional[int] = None,
+                 max_num_batched_tokens: Optional[int] = None):
         from vllm import LLM  # noqa: import inside so CPU mode never needs vllm
         t0 = time.time()
-        # T4 / V100 (no bf16): dtype="half"; enforce_eager=True saves the memory of CUDA graphs on a 16 GB card
+        # T4 / V100 (no bf16): dtype="half"; enforce_eager=True saves the memory of CUDA graphs on a 16 GB card.
+        # max_num_seqs / max_num_batched_tokens bound the activation memory vLLM reserves at start-up: with the
+        # defaults a 14B model on 15 GB leaves too little KV cache for one 8192-token request.
         kw = dict(model=model_path, tensor_parallel_size=tensor_parallel_size, max_model_len=max_model_len,
                   gpu_memory_utilization=gpu_memory_utilization, seed=0, trust_remote_code=True,
                   enforce_eager=enforce_eager, dtype=dtype)
         if quantization:
             kw["quantization"] = quantization
+        if max_num_seqs:
+            kw["max_num_seqs"] = int(max_num_seqs)
+        if max_num_batched_tokens:
+            kw["max_num_batched_tokens"] = int(max_num_batched_tokens)
         self.lora = None
         if lora_path:
             # fine-tuned LoRA adapter served next to the base weights (no 30 GB merged copy needed)
@@ -168,7 +175,9 @@ def make_backend(cfg: Dict) -> LLMBackend:
                              gpu_memory_utilization=float(cfg.get("gpu_memory_utilization", 0.88)),
                              quantization=cfg.get("quantization"), dtype=cfg.get("dtype") or "auto",
                              enable_thinking=bool(cfg.get("enable_thinking", False)), lora_path=lora,
-                             enforce_eager=bool(cfg.get("enforce_eager", False)))
+                             enforce_eager=bool(cfg.get("enforce_eager", False)),
+                             max_num_seqs=cfg.get("max_num_seqs"),
+                             max_num_batched_tokens=cfg.get("max_num_batched_tokens"))
             print(f"[llm] vLLM ready: {be.family} in {be.load_seconds:.0f}s", file=sys.stderr)
             return be
         if kind == "hf":

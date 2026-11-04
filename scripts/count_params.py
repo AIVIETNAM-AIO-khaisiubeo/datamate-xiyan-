@@ -54,12 +54,18 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--limit", type=float, default=15e9)
     a = ap.parse_args()
-    tot = 0
+    tot, empty = 0, []
     for p in a.paths:
         n = count_dir(p)
         tot += n
         print(f"{n / 1e9:8.3f}B  {p}")
+        if n == 0:
+            empty.append(p)
     print(f"{tot / 1e9:8.3f}B  total (limit {a.limit / 1e9:.1f}B)")
+    if empty:
+        # e.g. a model download interrupted after config.json: vLLM would then fail with "cannot find model weights"
+        print("NO WEIGHTS (.safetensors) FOUND IN: " + ", ".join(empty))
+        sys.exit(2)
     if tot > a.limit:
         print("OVER THE PARAMETER LIMIT")
         sys.exit(1)

@@ -27,6 +27,8 @@ def main(argv=None):
     ap.add_argument("--gpu-util", type=float, default=None, help="vLLM gpu_memory_utilization")
     ap.add_argument("--dtype", default=None, help="vLLM dtype: 'half' on GPUs without bf16 (T4, V100); default auto")
     ap.add_argument("--enforce-eager", action="store_true", help="vLLM without CUDA graphs (less memory, slower)")
+    ap.add_argument("--max-num-seqs", type=int, default=None, help="vLLM max_num_seqs (smaller on 16 GB GPUs)")
+    ap.add_argument("--max-batched-tokens", type=int, default=None, help="vLLM max_num_batched_tokens (chunked prefill)")
     ap.add_argument("--require-llm", action="store_true",
                     help="stop with an error if the LLM cannot be started, instead of silently running rule-only")
     ap.add_argument("--generators", default=None, help="LLM generators to run, e.g. g2,g3,g4 or g3 (G1 always runs)")
@@ -46,7 +48,8 @@ def main(argv=None):
     if a.tau is not None:
         cfg["tau"] = a.tau
     for k, v in (("tensor_parallel_size", a.tp), ("quantization", a.quant), ("max_model_len", a.max_len),
-                 ("gpu_memory_utilization", a.gpu_util), ("dtype", a.dtype)):
+                 ("gpu_memory_utilization", a.gpu_util), ("dtype", a.dtype), ("max_num_seqs", a.max_num_seqs),
+                 ("max_num_batched_tokens", a.max_batched_tokens)):
         if v is not None:
             cfg["llm"][k] = v
     if a.enforce_eager:
