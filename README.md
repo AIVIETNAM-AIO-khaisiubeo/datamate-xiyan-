@@ -206,6 +206,7 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 | Public test, submission 1 (1.000 câu) | 850 | 21 | 129 | **0.561** (điểm BTC) |
 | Public test, phiên bản 2 (rule-only, sau phân tích lỗi public không nhãn) | 920 | 22 | 58 | **0.912** (điểm BTC) |
 | Public test, G1 + Qwen3-14B + LoRA, bộ chọn cũ | 901 | 74 | 25 | **0.777** (điểm BTC) |
+| Public test, G1 + Qwen3-14B-AWQ + LoRA (T4), bộ chọn mới, G4 đã sửa | 949 | 24 | 27 | **0.895** (điểm BTC) |
 
 - **Train:** 3.000 đúng, 0 sai, 0 abstain. Đây là kết quả **trong mẫu**, do luật được phát triển khi phân tích train; **không** phải phép đo generalization độc lập.
 - **Public bản 1:** PA 0.561 do leaderboard cung cấp; số câu đúng/sai không được gắn nhãn trong public test.
@@ -213,6 +214,9 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
   này lạc quan so với private.
 - **Public, có LLM, bộ chọn cũ:** 0.777. LLM thay 73 đáp án đúng của G1 và đổi 46 đáp án thành `unanswerable`. Bộ chọn
   hiện tại sửa điều này (xem [`docs/RESULTS.md`](docs/RESULTS.md) §2).
+- **Public, có LLM, bộ chọn mới (T4):** 0.895. Không câu nào bị thay; chỉ khác bản 2 ở 49 câu LLM trả lời thay G1 và
+  18 câu LLM làm G1 bỏ trống. Theo hai điểm tổng, việc phủ quyết mất khoảng 14–18 điểm, còn các câu LLM trả lời thay
+  G1 chỉ đúng khoảng một nửa (phân tích ở [`docs/RESULTS.md`](docs/RESULTS.md) §2).
 
 Chi tiết breakdown theo intent, thay đổi giữa hai bản và phân tích lỗi nằm trong [báo cáo kết quả](docs/RESULTS.md). File kết quả CPU được lưu tại [`submissions/public_test_rule_only.jsonl`](submissions/public_test_rule_only.jsonl).
 

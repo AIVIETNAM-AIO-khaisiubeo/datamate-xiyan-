@@ -46,6 +46,7 @@ Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 
 | 1 | G1 rule-only | 0.561 |
 | 2 | G1 rule-only sau phân tích lỗi public không nhãn (`submissions/public_test_rule_only.jsonl`) | **0.912** |
 | 3 | G1 + Qwen3-14B + LoRA pha A (`colab-finetune-phasea`) | **0.777** |
+| 4 | G1 + Qwen3-14B-AWQ + LoRA pha A trên T4, bộ chọn mới, G4 đã sửa (ô 7b; nhánh `colab-finetune-phasea-20261104-1350`, `submissions/public_test_lora_phasea.jsonl`, sha256 `8124e92b…`) | **0.895** |
 
 Bản 2 cao một phần vì luật G1 được viết sau khi đọc câu hỏi và dữ liệu public (không nhãn). Đó là luật chung, nhưng
 được chọn bằng cách nhìn public, nên 0.912 lạc quan so với private.
@@ -57,10 +58,27 @@ Bản 3 kém bản 2 135 điểm (trên 1.000) và khác bản 2 ở 116 câu. M
 LLM không thay đáp án số) và trong `extract_sql`. Hai bản tiếp theo: replay bộ chọn mới trên log của bản 3 (chỉ CPU), rồi
 chạy lại toàn bộ với G4 đã sửa.
 
-**Bản 4 (7b, T4, bộ chọn mới + G4 đã sửa).** So với bản 2: 0 câu bị thay, 49 câu mới trả lời, 18 câu chuyển sang bỏ
-trống. Vì giống bản 2 ở 933/1000 câu, điểm của nó chỉ có thể nằm trong khoảng 0.845–0.979. Lần nộp báo 0.777000, đúng
-bằng điểm bản 3, nên file được nộp nhiều khả năng là bản 3: file bản 3 và file bản 4 đã tải về có tên gần như trùng
-nhau. Bản 4 chưa có điểm thật.
+**Bản 4 (7b, T4, bộ chọn mới + G4 đã sửa): 0.895.** So với bản 2, bản 4 không thay đáp án nào, trả lời thêm 49 câu mà
+G1 bỏ trống hoặc tự đánh dấu nghi ngờ, và bỏ trống 18 câu chỉ vì LLM trái ý G1. Vì giống bản 2 ở 933/1000 câu, điểm
+của nó phải nằm trong khoảng 0.845–0.979. (Lần nộp đầu báo 0.777000, đúng bằng điểm bản 3: file được nộp lần đó là bản
+3, vì hai file tải về có tên gần như trùng nhau.)
+
+Đọc điểm 0.895 (chỉ dùng hai con số tổng, không dùng nhãn từng câu). Bản 4 kém bản 2 17 điểm, và mọi chênh lệch nằm ở
+67 câu:
+- 49 câu mới trả lời: đúng *a*, sai 49 − *a*, đóng góp 2*a* − 49;
+- 18 câu mới bỏ trống: bản 2 đúng *c*, sai 18 − *c*, đóng góp 18 − 2*c*.
+
+Cộng lại bằng −17, nên *a* = *c* + 7. Bản 2 đúng khoảng 98% số câu nó trả lời (0.912 với 942 câu trả lời: khoảng 927
+đúng, 15 sai), nên phần lớn 18 câu bị bỏ trống có lẽ là câu G1 đúng (*c* ≈ 16–18). Từ đó:
+- **Việc LLM phủ quyết G1 làm mất khoảng 14–18 điểm.** Bản 5 sửa điều này: LLM chỉ phủ quyết khi, trên shop giữ riêng, nó
+  đúng nhiều hơn sai ở những câu trái ý G1.
+- **Các câu LLM trả lời thay G1 đúng khoảng 47–51%** (*a* ≈ 23–25 trên 49), tức gần như tung đồng xu, nên đóng góp
+  khoảng 0. Trên shop giữ riêng của train, các câu này gần như luôn đúng, nhưng chỉ có 5–6 câu như vậy và đều giống
+  train. Hiệu chuẩn của LLM ở những câu G1 không chắc đang quá lạc quan. Đây là điểm cần sửa tiếp theo, và quan trọng cho
+  private, nơi G1 sẽ không chắc ở nhiều câu hơn.
+
+Phân tích này giả định file được nộp là file 7b của nhánh `colab-finetune-phasea-20261104-1350` (sha256 `8124e92b…`).
+Nếu là file `_replay` (sha256 `28e7e73c…`; 47 câu mới trả lời, 18 câu mới bỏ trống), kết luận gần như không đổi.
 
 **Bản 5 (7c, bản cuối, chỉ CPU trên log của bản 4).** Thêm ba chốt chặn, đều là luật chung và đều được kiểm trên
 train:
