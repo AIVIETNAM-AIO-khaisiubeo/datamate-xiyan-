@@ -1,8 +1,14 @@
-# Kết quả đo được (chế độ CPU, chỉ generator luật G1 + bộ chọn)
+# Nhật ký kết quả DataMate-XiYan — CPU baseline, GPU Phase A và leaderboard
 
-Môi trường phát triển: Windows, CPU 16 luồng, **không GPU** ⇒ các generator LLM (G2–G4) chỉ được kiểm thử
-bằng LLM giả lập (`tests/test_agent_mock.py`), chưa đo độ chính xác. Mọi số dưới đây là của
-`python -m datamate.predict --llm none`.
+> **Historical research log — 2026-11-04.** This file preserves the chronology of CPU baselines, public-leaderboard submissions, GPU experiments and debugging. It is **not** a single up-to-date configuration report. For a comparison between official public scores, in-sample results, Phase-A held-out evaluation and unverified results, read [EXPERIMENTS.md](EXPERIMENTS.md). For the implementation see [ARCHITECTURE.md](ARCHITECTURE.md) and [XIYAN_ADAPTATION.md](XIYAN_ADAPTATION.md).
+>
+> **Known provenance limitation:** `models/adapter/TRAINING.md` contains a contradictory auto-generated "GPU CPU" line; keep the original model-run logs when claiming hardware settings. Public scores refer to **specific uploaded files/older versions**, not any new `final`-named artifact by default.
+
+
+**Lịch sử thử nghiệm:** các mục `1 và `5 là số đo CPU / trong mẫu; mục `2 ghi các lượt nộp public thực tế,
+bao gồm các lần chạy với Qwen3-14B / LoRA pha A. Không gộp các số này thành kết quả của một phiên bản duy nhất.
+Các kiểm thử mock LLM không thay thế cho phép đo GPU. Ngoài ra, xem
+[EXPERIMENTS.md](EXPERIMENTS.md) để hiểu giới hạn suy luận từ điểm leaderboard.
 
 ## 1. Train (3.000 câu, 30 shop) — có đáp án
 
