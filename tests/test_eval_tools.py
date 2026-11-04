@@ -1,0 +1,221 @@
+"""Data-free tests of the evaluation helpers used by the Colab notebook (validate, noisy split, submission diff)."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+
+
+def _write_jsonl(path, rows):
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def _fake_run(d):
+    """Six shops, one question each: G1 right on all; G2 right on 4, wrong on 1, silent on 1; G3 alone on q5."""
+    logs = os.path.join(d, "logs")
+    os.makedirs(logs)
+    answers = []
+    for i in range(6):
+        qid, gold = f"q{i}", 100 + i
+        answers.append({"id": qid, "type": "number", "answer": gold, "alias": []})
+        cands = [{"gen": "G1_rule", "intent": "revenue", "answer": {"type": "number", "answer": gold}}] if i < 5 else []
+        if i < 4:
+            cands.append({"gen": "G2_frame", "intent": "revenue", "answer": {"type": "number", "answer": gold}})
+        elif i == 4:
+            cands.append({"gen": "G2_frame", "intent": "revenue", "answer": {"type": "number", "answer": 1}})
+        else:
+            cands.append({"gen": "G3_rewrite", "intent": "revenue", "answer": {"type": "number", "answer": gold}})
+        json.dump({"id": qid, "business_id": f"biz_{i}", "question": "?", "candidates": cands},
+                  open(os.path.join(logs, qid + ".json"), "w", encoding="utf-8"))
+    _write_jsonl(os.path.join(d, "answers.jsonl"), answers)
+    return logs, os.path.join(d, "answers.jsonl")
+
+
+def test_generator_report_separates_llm_from_g1():
+    import validate
+    with tempfile.TemporaryDirectory() as d:
+        logs, ans = _fake_run(d)
+        rows, n = validate.generator_report(validate.load(logs, ans))
+    assert n == 6
+    assert rows["G1_rule"]["n"] == 5 and rows["G1_rule"]["ok"] == 5
+    assert rows["G2_frame"]["n"] == 5 and rows["G2_frame"]["ok"] == 4 and rows["G2_frame"]["agree_g1"] == 4
+    assert rows["G3_rewrite"]["solo"] == 1 and rows["G3_rewrite"]["solo_ok"] == 1     # answered where G1 was silent
+
+
+def test_write_reliability_keeps_g1_calibration():
+    """Regression: a new --write-reliability file used to contain only the LLM generators (G1_rule was lost)."""
+    with tempfile.TemporaryDirectory() as d:
+        logs, ans = _fake_run(d)
+        base = os.path.join(d, "base.json")
+        json.dump({"G1_rule": {"__all__": 0.97, "revenue": 0.98}}, open(base, "w"))
+        out = os.path.join(d, "rel.json")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "validate.py"), logs, ans, "--folds", "3",
+                            "--out", os.path.join(d, "v"), "--write-reliability", out, "--base-reliability", base],
+                           capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        assert r.returncode == 0, r.stderr
+        rel = json.load(open(out, encoding="utf-8"))
+        assert rel["G1_rule"] == {"__all__": 0.97, "revenue": 0.98}           # untouched without --include-g1
+        assert "G2_frame" in rel and "G3_rewrite" in rel
+        m = json.load(open(os.path.join(d, "v", "metrics.json"), encoding="utf-8"))
+        assert "llm_only" in m and m["generators"]["G2_frame"]["n"] == 5
+        assert "LLM generators only" in r.stdout
+
+
+def test_noisy_split_keeps_labels_and_shops():
+    import make_noisy_split
+    with tempfile.TemporaryDirectory() as d:
+        src, out = os.path.join(d, "train"), os.path.join(d, "noisy")
+        os.makedirs(os.path.join(src, "data", "biz_1"))
+        open(os.path.join(src, "rulebook.md"), "w", encoding="utf-8").write("# rules\n")
+        qs = [{"id": f"q{i}", "business_id": f"biz_{i % 3}", "question": "Tháng 5/2025 cửa hàng bán được bao nhiêu tiền?",
+               "as_of_date": "2026-09-14"} for i in range(9)]
+        _write_jsonl(os.path.join(src, "questions.jsonl"), qs)
+        _write_jsonl(os.path.join(src, "answers.jsonl"),
+                     [{"id": q["id"], "type": "number", "answer": i, "alias": []} for i, q in enumerate(qs)])
+        st = make_noisy_split.make(src, out, fold=0, folds=3, n=2, level=1.0, keep_unchanged=True)
+        nq = [json.loads(l) for l in open(os.path.join(out, "questions.jsonl"), encoding="utf-8")]
+        na = {json.loads(l)["id"]: json.loads(l) for l in open(os.path.join(out, "answers.jsonl"), encoding="utf-8")}
+        assert st["shops"] == ["biz_0"] and len(nq) == 6                      # fold 0 of 3: biz_0 only, 2 variants each
+        assert all(q["business_id"] == "biz_0" and q["id"].split("~")[0] in {"q0", "q3", "q6"} for q in nq)
+        assert {k: v["answer"] for k, v in na.items()} == {q["id"]: int(q["id"].split("~")[0][1:]) for q in nq}
+        assert os.path.exists(os.path.join(out, "data", "biz_1")) and os.path.exists(os.path.join(out, "rulebook.md"))
+        assert any(q["question"] != qs[0]["question"] for q in nq)            # level 1.0 changes the wording
+
+
+def test_compare_submissions_kinds():
+    import compare_submissions as cs
+    old = {"a": {"type": "abstain"}, "b": {"type": "number", "answer": 1}, "c": {"type": "number", "answer": 2},
+           "d": {"type": "boolean", "answer": True}}
+    new = {"a": {"type": "number", "answer": 5}, "b": {"type": "number", "answer": 1}, "c": {"type": "number", "answer": 3},
+           "d": {"type": "abstain"}}
+    cnt, rows = cs.compare(old, new)
+    assert dict(cnt) == {"newly_answered": 1, "same": 1, "changed": 1, "newly_abstained": 1}
+    assert [r["id"] for r in rows] == ["a", "c", "d"]
+
+
+def test_notebook_push_cell_checks_lfs():
+    nb = json.load(open(os.path.join(ROOT, "notebooks", "colab_finetune.ipynb"), encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "apt-get -qq install -y git-lfs" in src                        # Colab has no git-lfs
+    assert "version https://git-lfs" in src and "ls-remote" in src         # pointer check before push, branch check after
+    assert "DATAMATE_G4_SCOPE=all" in src and "make_noisy_split.py" in src
+
+
+def test_require_llm_fails_loudly_instead_of_rule_only():
+    import pytest
+    from datamate.llm.backend import NullBackend, make_backend
+    assert isinstance(make_backend({"backend": "vllm", "model_path": "/nonexistent/model"}), NullBackend)
+    with pytest.raises(RuntimeError):
+        make_backend({"backend": "vllm", "model_path": "/nonexistent/model", "require_llm": True})
+
+
+def test_awq_checkpoint_counts_unpacked_parameters():
+    import struct
+    import count_params
+    with tempfile.TemporaryDirectory() as d:
+        hdr = {"l.qweight": {"dtype": "I32", "shape": [64, 8], "data_offsets": [0, 0]},
+               "l.qzeros": {"dtype": "I32", "shape": [1, 8], "data_offsets": [0, 0]},
+               "l.scales": {"dtype": "F16", "shape": [1, 64], "data_offsets": [0, 0]},
+               "norm.weight": {"dtype": "F16", "shape": [10], "data_offsets": [0, 0]}}
+        b = json.dumps(hdr).encode()
+        open(os.path.join(d, "model.safetensors"), "wb").write(struct.pack("<Q", len(b)) + b)
+        json.dump({"quantization_config": {"quant_method": "awq", "bits": 4}}, open(os.path.join(d, "config.json"), "w"))
+        assert count_params.count_dir(d) == 64 * 64 + 10       # 4-bit packing undone, quantisation metadata skipped
+
+
+def test_notebook_has_a_t4_profile():
+    nb = json.load(open(os.path.join(ROOT, "notebooks", "colab_finetune.ipynb"), encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "--quant awq --dtype half --enforce-eager" in src and "Qwen/Qwen3-14B-AWQ" in src
+    assert "--require-llm" in src and "CAN_TRAIN" in src
+    from datamate.predict import main  # noqa: F401  (flags below must exist)
+    import datamate.predict as pr
+    text = open(pr.__file__, encoding="utf-8").read()
+    assert all(f in text for f in ("--dtype", "--enforce-eager", "--require-llm"))
+
+
+def test_notebook_t4_memory_and_recovery_cells():
+    nb = json.load(open(os.path.join(ROOT, "notebooks", "colab_finetune.ipynb"), encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "--max-num-seqs 16 --max-batched-tokens 2048" in src          # room for the KV cache on 15 GB
+    assert "git lfs smudge" not in src and '"lfs", "smudge"' in src       # adapter fetched from GitHub if not on Drive
+    assert "def explain(" in src and "os.path.ismount" in src             # root cause shown; Drive really mounted
+    assert 'not os.path.exists(f"{AWQ_DIR}/config.json")' not in src      # download always resumed / verified
+    import datamate.predict as pr
+    text = open(pr.__file__, encoding="utf-8").read()
+    assert "--max-num-seqs" in text and "--max-batched-tokens" in text
+
+
+def test_count_params_fails_on_a_directory_without_weights():
+    with tempfile.TemporaryDirectory() as d:
+        json.dump({"model_type": "qwen3"}, open(os.path.join(d, "config.json"), "w"))
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "count_params.py"), d], capture_output=True, text=True)
+        assert r.returncode == 2 and "NO WEIGHTS" in r.stdout
+
+
+def test_perturb_split_keeps_every_value():
+    import csv as _csv
+    import openpyxl
+    import perturb_split as ps
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "train")
+        os.makedirs(os.path.join(src, "data", "biz_1"))
+        open(os.path.join(src, "rulebook.md"), "w", encoding="utf-8").write("# r\n")
+        _write_jsonl(os.path.join(src, "questions.jsonl"), [{"id": "q1", "business_id": "biz_1", "question": "?"}])
+        _write_jsonl(os.path.join(src, "answers.jsonl"), [{"id": "q1", "type": "number", "answer": 1}])
+        with open(os.path.join(src, "data", "biz_1", "don.csv"), "w", encoding="utf-8", newline="") as f:
+            _csv.writer(f).writerows([["Mã đơn", "Ngày", "Tiền"], ["D1", "2025-05-01", "1.200.000"], ["D2", "", "5"]])
+        wb = openpyxl.Workbook()
+        wb.active.title = "A"
+        for r in (["TIÊU ĐỀ"], ["Mã hàng", "Tên"], ["H1", "Cà phê"]):
+            wb.active.append(r)
+        wb.create_sheet("B").append(["x", "y"])
+        wb.save(os.path.join(src, "data", "biz_1", "hang.xlsx"))
+
+        def values(dirpath):
+            out = []
+            for f in sorted(os.listdir(dirpath)):
+                p = os.path.join(dirpath, f)
+                if f.endswith(".csv"):
+                    text = open(p, encoding="utf-8-sig").read()
+                    delim = ";" if ";" in text.splitlines()[0] else ","
+                    out += [v for r in _csv.reader(text.splitlines(), delimiter=delim) for v in r if v]
+                elif f.endswith(".xlsx"):
+                    w = openpyxl.load_workbook(p, read_only=True)
+                    out += [str(v) for ws in w.worksheets for r in ws.iter_rows(values_only=True) for v in r if v]
+                    w.close()                                  # read-only books keep the file open (Windows)
+            return sorted(v.upper() for v in out)
+
+        base = values(os.path.join(src, "data", "biz_1"))
+        for kind in ps.KINDS:
+            out, shops, _ = ps.make(src, os.path.join(d, "out"), kind)
+            assert shops == ["biz_1"] and os.path.exists(os.path.join(out, "answers.jsonl"))
+            assert values(os.path.join(out, "data", "biz_1")) == base, kind      # same values, other layout
+        w = openpyxl.load_workbook(os.path.join(d, "out", "sheets_reversed", "data", "biz_1", "hang.xlsx"))
+        assert w.sheetnames == ["B", "A"]
+
+
+def test_leave_intent_out_scores_only_the_sql_route():
+    import leave_intent_out as lio
+    recs = []
+    # SQL right on three intents, wrong on 'units': right 75 % of the time, so it may answer where G1 is removed
+    # (with SQL right only half of the time, its measured __solo__ reliability is 0.5 and it never answers alone)
+    for s in range(6):
+        for i, it in enumerate(("revenue", "aov", "order_count", "units")):
+            gold = 10 + i
+            g4v = gold if it != "units" else gold + 1
+            mk = lambda gen, v, **d: __import__("datamate.select.selector", fromlist=["Candidate"]).Candidate(
+                gen, __import__("datamate.engine.answer", fromlist=["Answer"]).Answer("number", v), d.pop("intent", None), d)
+            recs.append({"id": f"q{s}{i}", "biz": f"b{s}", "question": "?", "ref": {"type": "number", "answer": gold},
+                         "cands": [mk("G1_rule", gold, intent=it), mk("G4_base", g4v, sql="a", family="m"),
+                                   mk("G4_cte", g4v, sql="b", family="m")]})
+    rows = lio.run(recs, folds=3)
+    by = {it: [x for x in rows if x["intent"] == it] for it in ("revenue", "units")}
+    assert all(x["score"] >= 0 for x in by["revenue"]) and any(x["score"] == 1 for x in by["revenue"])
+    assert all(x["score"] <= 0 for x in by["units"])       # G1 removed: only the (wrong) SQL answers remain

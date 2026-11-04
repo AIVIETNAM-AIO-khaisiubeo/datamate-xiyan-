@@ -162,3 +162,46 @@ def parse_rulebook(text: str) -> Rulebook:
         rb.tet_to = (1, int(m.group(1)))
     _check(rb)
     return rb
+
+
+# ---------------------------------------------------------------------------- rows the engine has never seen
+# The engine (G1) implements the rows of the rulebooks read while it was written (train, then public).  A private
+# rulebook may define new concepts ("Khách ... nhất", "Trung bình mỗi ...").  A question that names such a concept
+# must not be forced onto the nearest known intent: the rule routes are flagged and only the SQL route, which reads
+# the row as evidence, may answer (or the agent abstains).
+KNOWN_ROWS_PATH = "artifacts/known_rulebook_rows.json"
+
+
+def concept_tokens(key: str) -> List[str]:
+    """Content words of a folded row name ('khach sop nhat' -> ['khach', 'sop', 'nhat']); placeholders X / N / D
+    and punctuation are dropped."""
+    return [t for t in re.sub(r"[^a-z0-9]+", " ", key).split() if len(t) > 1]
+
+
+def row_id(row: "RuleRow") -> str:
+    return " ".join(concept_tokens(row.key))
+
+
+def mentions(nq: str, toks: List[str], max_gap: int = 2) -> bool:
+    """The folded question contains the row's words in order, at most max_gap other words between two of them."""
+    q = nq.split()
+    if len(toks) < 2:
+        return False
+    for i, w in enumerate(q):
+        if w != toks[0]:
+            continue
+        j, ok = i, True
+        for t in toks[1:]:
+            nxt = next((k for k in range(j + 1, min(len(q), j + 2 + max_gap)) if q[k] == t), None)
+            if nxt is None:
+                ok = False
+                break
+            j = nxt
+        if ok:
+            return True
+    return False
+
+
+def new_rows(rb: "Rulebook", known: Set[str]) -> List["RuleRow"]:
+    """Rows of this split's rulebook that the engine never saw (and specific enough to be matched in a question)."""
+    return [r for r in rb.rows if len(concept_tokens(r.key)) >= 2 and row_id(r) not in known]

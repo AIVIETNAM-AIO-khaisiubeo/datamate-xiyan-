@@ -11,6 +11,28 @@ Following Chow's rule for the +1 / 0 / −1 metric, the agent answers only if P 
 0.6, a safety margin over the theoretical 0.5), otherwise it abstains.  This mirrors the
 abstention-as-a-decision view of "When Silence is Golden": abstaining is the correct action
 whenever the expected reward of answering is negative.
+
+Three guards, added after the first GPU run on public (0.777, below rule-only) showed the LLM routes
+overriding correct rule answers:
+
+* one vote per model: G2, G3, the G4 formats and G_select all come from the same LLM, so their errors are
+  correlated; they form one family (``Candidate.family``) and agreeing with each other adds no vote;
+* anchor: a *clean* rule answer (G1, no out-of-vocabulary / form-conflict / tie flag, rulebook row unchanged)
+  cannot be replaced by an LLM answer.  A disagreeing LLM still lowers its probability, so the outcome is the
+  rule answer or abstention (0 instead of risking -1).  Reliabilities are measured on train, where the LLM
+  agrees with G1 97-99 % of the time, so they say little about the LLM when it disagrees;
+* an ``unanswerable`` claim made only by the LLM is not eligible while G1 has a value answer;
+* a group supported only by SQL needs ``min_sql_support`` executions (distinct SQL texts or prompts) that
+  return the same value (XiYan's execution consistency); a single SQL gives no positive vote.
+
+Two more after the 0.909 run (both measured on the logs of that run, without labels):
+
+* agreement never counts against an answer: the group's strongest family gives its own logit, every other family
+  that agrees can only add (``max(0, logit r)``).  A flagged LLM route (reliability capped at 0.3) that reproduced
+  the rule answer used to subtract from it: five correct G1 answers fell from p 0.7 to 0.5 and were withheld;
+* G1 unsure (no anchor): an LLM vote is capped by the reliability of that generator measured on held-out questions
+  where G1 had no clean answer (key ``__solo__``, validate.py, prior 0.5).  Its overall reliability is measured
+  mostly where it agrees with G1 (0.98 for G2/G3) and was over-optimistic where G1 is silent (about 50 % on public).
 """
 from __future__ import annotations
 
@@ -45,6 +67,13 @@ def sigmoid(x: float) -> float:
     return 1 / (1 + math.exp(-x))
 
 
+LLM_GEN_PREFIXES = ("G2_", "G3_", "G4_", "G5_", "G_select")
+
+
+def is_llm_gen(gen: str) -> bool:
+    return gen.startswith(LLM_GEN_PREFIXES)
+
+
 @dataclass
 class Candidate:
     gen: str
@@ -54,21 +83,84 @@ class Candidate:
 
     @property
     def family(self) -> str:
-        """Model identity: candidates of one family (e.g. several SQL formats of the same LLM) are one vote."""
-        return self.detail.get("family") or self.gen
+        """Model identity: candidates of one family (every route of the same LLM) are one vote.
+        Logs written before the family was recorded fall back to one shared LLM family."""
+        return self.detail.get("family") or ("llm" if is_llm_gen(self.gen) else self.gen)
+
+
+def is_clean_rule(c: Candidate, trusted=None, anchor_gens=("G1_rule",)) -> bool:
+    """A rule answer with no risk signal (the selector's anchor; also used to fit the dissent reliability)."""
+    if c.gen not in anchor_gens or c.answer.type == "abstain":
+        return False
+    m = c.answer.meta
+    if m.get("oov") or m.get("conflict") or m.get("tie"):
+        return False
+    if trusted is not None and c.intent and trusted.get(c.intent) is False:
+        return False
+    return _sanity_penalty(c.answer) >= 0
+
+
+DISSENT_KEY = "__dissent__"      # reliability of a generator when it disagrees with a clean rule answer
+SOLO_KEY = "__solo__"            # reliability of a generator on questions where no clean rule answer exists
+
+
+def _sql_support(members: List[Candidate]) -> int:
+    """Executions behind a group: distinct SQL candidates (plus prompts that produced the same SQL).
+    G_select re-picks one of them, so it adds no execution."""
+    return sum(int(c.detail.get("support") or 1) for c in members if c.gen.startswith("G4"))
 
 
 class Selector:
     def __init__(self, reliability_path: Optional[str] = None, tau: float = 0.6, lam: float = 0.6,
-                 oov_cap: float = 0.3):
+                 oov_cap: float = 0.3, anchor_gens=("G1_rule",), min_sql_support: int = 2, legacy: bool = False):
         self.tau = tau
         self.lam = lam
         self.oov_cap = oov_cap
         self.unseen_prior = 0.7
+        # legacy=True reproduces the selector of the first GPU run (families by generator name, no anchor,
+        # no SQL-support rule) so that logged runs can be replayed exactly (scripts/replay_selector.py)
+        self.legacy = legacy
+        self.anchor_gens = () if legacy else tuple(anchor_gens or ())
+        self.min_sql_support = 0 if legacy else min_sql_support
         self.rel: Dict[str, Dict[str, float]] = {}
         if reliability_path and os.path.exists(reliability_path):
             with open(reliability_path, encoding="utf-8") as fh:
                 self.rel = json.load(fh)
+
+    def _fam(self, c: Candidate) -> str:
+        return (c.detail.get("family") or c.gen) if self.legacy else c.family
+
+    def _anchor(self, votes: List[Candidate], trusted=None) -> Optional[Candidate]:
+        """A rule answer with no risk signal: LLM answers may lower its confidence but not replace it."""
+        return next((c for c in votes if is_clean_rule(c, trusted, self.anchor_gens)), None)
+
+    def _r_dissent(self, c: Candidate, trusted=None) -> float:
+        """Weight of an LLM candidate that contradicts a clean rule answer.  Its usual reliability is measured
+        mostly where it agrees with the rule, so it is replaced by the reliability measured on the disagreements
+        of held-out shops (validate.py, key __dissent__; 0.5 when never measured).  By Chow's rule the dissent
+        only pushes the rule answer towards abstention when the LLM is right more often than wrong there."""
+        return min(self._r_eff(c, trusted), self.rel.get(c.gen, {}).get(DISSENT_KEY, 0.5))
+
+    def _r_solo(self, c: Candidate, trusted=None) -> float:
+        """Weight of an LLM candidate on a question without a clean rule answer: capped by the reliability measured
+        on such questions of held-out shops (key __solo__); not capped when that was never measured."""
+        r = self._r_eff(c, trusted)
+        solo = self.rel.get(c.gen, {}).get(SOLO_KEY)
+        return min(r, solo) if solo is not None and is_llm_gen(c.gen) else r
+
+    def _family_votes(self, members: List[Candidate], trusted=None, solo: bool = False) -> Dict[str, float]:
+        """family -> reliability of its vote for this group (its most reliable member speaks for it)."""
+        out: Dict[str, float] = {}
+        by_fam: Dict[str, List[Candidate]] = defaultdict(list)
+        r_of = self._r_solo if solo else self._r_eff
+        for c in members:
+            by_fam[self._fam(c)].append(c)
+        for f, cs in by_fam.items():
+            r = max(r_of(c, trusted) for c in cs)
+            if self.min_sql_support and all("sql" in c.detail for c in cs) and _sql_support(cs) < self.min_sql_support:
+                r = min(r, 0.5)                    # one SQL execution alone: no positive vote
+            out[f] = r
+        return out
 
     def r(self, gen: str, intent: Optional[str]) -> float:
         g = self.rel.get(gen, {})
@@ -86,35 +178,50 @@ class Selector:
         groups: Dict[str, List[Candidate]] = defaultdict(list)
         for c in votes:
             groups[c.answer.key()].append(c)
+        anchor = self._anchor(votes, trusted)
+        solo = anchor is None and not self.legacy
+        votes_by_group = {key: self._family_votes(members, trusted, solo) for key, members in groups.items()}
+        rule_value = any(c.gen in self.anchor_gens and c.answer.type != "unanswerable" for c in votes)
         info = {"groups": []}
+        if anchor is not None:
+            info["anchor"] = anchor.gen
         best, best_p = None, -1.0
         for key, members in groups.items():
-            s = 0.0
-            seen = set()
-            # one vote per model family and group: the most reliable member of the family speaks for it
-            fam_best: Dict[str, Candidate] = {}
-            for c in members:
-                cur = fam_best.get(c.family)
-                if cur is None or self._r_eff(c, trusted) > self._r_eff(cur, trusted):
-                    fam_best[c.family] = c
-            for c in fam_best.values():
-                seen.add(c.gen)
-                r = self._r_eff(c, trusted)
-                s += logit(r)
-            others = set()
-            for k2, m2 in groups.items():
+            fams = votes_by_group[key]
+            if self.legacy:
+                s = sum(logit(r) for r in fams.values())
+            else:                                         # agreeing families only add: the strongest speaks first
+                ls = sorted((logit(r) for r in fams.values()), reverse=True)
+                s = ls[0] + sum(max(0.0, x) for x in ls[1:])
+            # every other family that voted for a different answer counts against this group (once, its strongest vote)
+            dissent: Dict[str, float] = {}
+            anchored = anchor is not None and key == anchor.answer.key()
+            for k2, f2 in votes_by_group.items():
                 if k2 == key:
                     continue
-                for c in m2:
-                    if c.family in others or c.family in fam_best:
+                for f, r in f2.items():
+                    if f in fams:
                         continue
-                    others.add(c.family)
-                    s -= self.lam * max(0.0, logit(self._r_eff(c, trusted)))
+                    if anchored:                          # disagreement with a clean rule answer: its own reliability
+                        r = min(r, max(self._r_dissent(c, trusted) for c in groups[k2] if self._fam(c) == f))
+                    dissent[f] = max(dissent.get(f, 0.0), r)
+            s -= self.lam * sum(max(0.0, logit(r)) for r in dissent.values())
             s += _sanity_penalty(members[0].answer)
             p = sigmoid(s)
-            info["groups"].append({"key": key[:200], "gens": sorted(seen), "families": sorted(fam_best), "p": round(p, 4)})
-            if p > best_p:
+            llm_only = not any(c.gen in self.anchor_gens for c in members)
+            eligible = True
+            if anchor is not None and key != anchor.answer.key():
+                eligible = False                          # an LLM answer does not replace a clean rule answer
+            elif llm_only and rule_value and members[0].answer.type == "unanswerable":
+                eligible = False                          # "unanswerable" from the LLM alone vs a rule value answer
+            g = {"key": key[:200], "gens": sorted({c.gen for c in members}), "families": sorted(fams), "p": round(p, 4)}
+            if not eligible:
+                g["eligible"] = False
+            info["groups"].append(g)
+            if eligible and p > best_p:
                 best, best_p = members[0].answer, p
+        if best is None:
+            return Answer("abstain", reason="no eligible candidate"), info
         info["p"] = round(best_p, 4)
         if best_p < self.tau:
             return Answer("abstain", reason=f"low confidence {best_p:.2f}"), info

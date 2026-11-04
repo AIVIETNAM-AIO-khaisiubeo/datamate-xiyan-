@@ -1,0 +1,27 @@
+# DataMate-XiYan with a FINE-TUNED, MERGED Qwen3-14B (outputs/merged from training/sft_lora.py --merge).
+# Same runtime as Dockerfile; the weights are copied from the build context instead of downloaded, so the
+# image contains exactly one 14.8B model (check: python scripts/count_params.py outputs/merged).
+# Needs BuildKit (default in Docker >= 23), which reads Dockerfile.finetuned.dockerignore.
+#   docker build -f Dockerfile.finetuned -t datamate-xiyan:ft .
+ARG BASE_IMAGE=vllm/vllm-openai:v0.12.0
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN python3 -m pip install -r /app/requirements.txt
+
+ARG MODEL_DIR=/models/llm
+COPY outputs/merged ${MODEL_DIR}
+
+COPY datamate /app/datamate
+COPY artifacts /app/artifacts
+COPY predict.sh /app/predict.sh
+RUN chmod +x /app/predict.sh
+
+ENV DATAMATE_LLM=vllm DATAMATE_MODEL=${MODEL_DIR} DATAMATE_TP=2 DATAMATE_CACHE=/tmp/datamate_cache \
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1
+
+ENTRYPOINT []
+CMD ["/app/predict.sh"]

@@ -83,7 +83,7 @@ def test_selector_threshold():
     a, _ = s.select([Candidate("G4_sql", Answer("number", 5))])
     assert a.type == "abstain"                      # a lone weak generator is not trusted
     a, _ = s.select([Candidate("G4_sql", Answer("number", 5)), Candidate("G3_rewrite", Answer("number", 5), "revenue")])
-    assert a.type == "number"                       # agreement raises confidence
+    assert a.type == "number"                       # one LLM: its more reliable route speaks for it
     a, _ = s.select([Candidate("G1_rule", Answer("number", 5), "revenue"),
                      Candidate("G3_rewrite", Answer("number", 6), "revenue"),
                      Candidate("G2_frame", Answer("number", 6), "revenue")])

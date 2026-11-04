@@ -23,23 +23,25 @@ _LIST = re.compile(r"\blan luot\b|\btung thang\b|\bmoi thang (?:bao nhieu|bn|duo
 _YESNO = re.compile(r"(?:phai|dung|dung vay|dung khong|co) (?:khong|ko|hong|hok|k)\b|\bdung khong\b|\bco phai\b|"
                     r"(?:khong|ko|hong|hok)\s*\??\s*$|\bhay khong\b")
 _DAYCOUNT = re.compile(r"\b(?:may|bao nhieu|bn|bnhiu|so) (?:bua|ngay|hom)\b")
+_HOUR = re.compile(r"\b(?:may|bao nhieu|bn|bnhiu) gio\b|\bgio nao\b|\bkhung gio\b")
+_COUNT = re.compile(r"\b(?:may|bao nhieu|bn|bnhiu) (?:luot|don|phieu|lan|khach|nguoi|chiec)\b")
+_MONEY_WORDS = re.compile(r"tien|doanh thu|dthu|\bdong\b|\blai\b|\bloi\b|chi phi|\bgia\b|\bvon\b|\bno\b|thu ve")
+_MONEY = {"revenue", "aov", "purchase_total", "avg_purchase_price", "stock_value", "debt_total", "repayments",
+          "gross_profit", "net_profit", "price_on"}
 SCALAR = {"number", "percent"}
 _NONZERO = {"revenue", "units", "order_count", "aov", "phone_units", "purchased_qty", "delivered_qty", "purchase_total",
             "share", "phone_pay_total", "phone_pay_avg", "repair_job_count", "delivery_trips", "gross_profit"}
 
 
-def check(nq: str, fr, ans) -> Optional[str]:
-    """nq: normalised (folded) question; fr: Frame; ans: Answer."""
-    if fr is None or ans is None or ans.type in ("abstain", "unanswerable"):
+def check_form(nq: str, ans, intent: Optional[str] = None) -> Optional[str]:
+    """The checks that need only the question and the answer (no frame): usable for every generator, SQL included.
+    Callers pass the ORIGINAL question: an LLM rewrite can change the form of the question it then answers."""
+    if ans is None or ans.type in ("abstain", "unanswerable"):
         return None
     s = " " + nq + " "
     t = ans.type
-    it = fr.intent
     if ans.value is None or (isinstance(ans.value, (list, dict)) and not ans.value):
         return "empty value"
-    # questions are generated about things that happened: a zero sum / count means the filter or period is wrong
-    if t in SCALAR and ans.value == 0 and it in _NONZERO:
-        return "zero result"
     # '%' asked, scalar money/count returned (percent questions are answered by share/growth/rate intents)
     if _PCT.search(s) and t == "number" and not re.search(r"\b(?:tien|bao nhieu tien|so tien)\b.*\b(?:giam|bot|chiet khau) \d", s):
         if not re.search(r"\d\s*(?:%|phan tram)", s):  # '%' in a product name / threshold ('kem 5%', 'giam 10%')
@@ -49,8 +51,33 @@ def check(nq: str, fr, ans) -> Optional[str]:
         if not re.search(r"\b(?:bao nhieu|bn|bnhiu|may) (?:mat hang|san pham|sp|mon|khach|don|ngay|nguoi|lo|xe|phieu|luot)\b", s):
             return "which-question, scalar returned"
     # list asked, single scalar returned
-    if t in SCALAR and _LIST.search(s) and it not in ("debt_flow",):
+    if t in SCALAR and _LIST.search(s) and intent not in ("debt_flow",):
         return "list asked, scalar returned"
+    # yes/no asked
+    if t in SCALAR and _YESNO.search(s) and re.search(r"cao hon|thap hon|tang|giam|nhieu hon|it hon|lon hon", s):
+        return "yes/no asked, scalar returned"
+    # an hour of the day asked ('mấy giờ', 'khung giờ nào'), a calendar date returned
+    if t == "date" and _HOUR.search(s):
+        return "hour asked, date returned"
+    # a count of visits / orders / tickets asked, an amount of money returned
+    if t == "number" and intent in _MONEY and _COUNT.search(s) and not _MONEY_WORDS.search(s):
+        return "count asked, money returned"
+    return None
+
+
+def check(nq: str, fr, ans) -> Optional[str]:
+    """nq: normalised (folded) question; fr: Frame; ans: Answer."""
+    if fr is None or ans is None or ans.type in ("abstain", "unanswerable"):
+        return None
+    s = " " + nq + " "
+    t = ans.type
+    it = fr.intent
+    why = check_form(nq, ans, it)
+    if why:
+        return why
+    # questions are generated about things that happened: a zero sum / count means the filter or period is wrong
+    if t in SCALAR and ans.value == 0 and it in _NONZERO:
+        return "zero result"
     # several distinct months mentioned, single scalar that is not a comparison
     months = {(p.start, p.end) for p in (fr.periods or [])}
     named_item = bool((getattr(fr, "filters", None) or {}).get("product"))  # 'T8' inside a product name
@@ -58,9 +85,6 @@ def check(nq: str, fr, ans) -> Optional[str]:
             len(set(re.findall(r"\bthang (\d{1,2})\b", s))) >= 2 and \
             not re.search(r"so (?:voi )?|\bvs\b|hon|kem|chenh|tang|giam|cung ky|tu thang|den (?:het )?thang|toi (?:het )?thang", s):
         return "several months asked, single period used"
-    # yes/no asked
-    if t in SCALAR and _YESNO.search(s) and re.search(r"cao hon|thap hon|tang|giam|nhieu hon|it hon|lon hon", s):
-        return "yes/no asked, scalar returned"
     # 'nhóm X' named but no group-like filter resolved (shop without a group column, or an unknown group name)
     filt = getattr(fr, "filters", None) or {}
     mg = re.search(r"\bnhom (?:hang |mat hang |san pham )?([a-z]+)", s)

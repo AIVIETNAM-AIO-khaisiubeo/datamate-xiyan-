@@ -1,7 +1,11 @@
-# optional: fine-tuning the LLM generators (SFT + GRPO with abstention-aware reward)
-torch>=2.7
-transformers>=4.51
-peft>=0.15
-trl>=0.19
-datasets>=3.0
-accelerate>=1.6
+# optional: fine-tuning the LLM generators (SFT with (Q)LoRA, GRPO)
+# Pinned to one tested, mutually compatible set. Install AFTER vllm==0.12.0 (it brings torch==2.9.0; supports
+# Python 3.10-3.13, e.g. current Colab) in the same environment. transformers 5.x / TRL 1.x would break
+# training/sft_lora.py, and vLLM 0.12.0 requires transformers < 5.
+torch>=2.6                 # already satisfied by vllm's torch 2.9.0
+transformers==4.57.6
+trl==0.24.0
+peft==0.17.1
+accelerate>=1.4,<2
+datasets>=3,<5
+bitsandbytes>=0.46,<0.51   # --qlora (4-bit NF4)

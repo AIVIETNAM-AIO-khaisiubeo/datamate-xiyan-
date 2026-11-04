@@ -6,7 +6,9 @@ From a run's per-question logs (every generator's candidates are logged) this sc
   3. re-runs the selector on the held-out fold and reports PA, coverage, precision when answering,
      Brier score and ECE of the selector's probability, a reliability diagram and a tau sweep,
   4. writes every wrong answer to <out>/errors.jsonl (question, intent, generators, p) for error analysis,
-  5. optionally writes reliabilities fitted on all folds (--write-reliability), e.g. after a GPU run.
+  5. optionally writes reliabilities fitted on all the given logs (--write-reliability), e.g. after a GPU run on
+     shops the fine-tuned model never saw (predict --fold K with a model trained with --holdout-fold K).
+     Only the LLM generators are written unless --include-g1.
 
     python scripts/validate.py runs/train/logs data/train/answers.jsonl --folds 5 [--write-reliability artifacts/reliability.json]
 
@@ -23,9 +25,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from datamate.engine.answer import Answer  # noqa: E402
 from datamate.scorer import score_one  # noqa: E402
-from datamate.select.selector import Candidate, Selector  # noqa: E402
+from datamate.select.logs import candidates_from_log  # noqa: E402
+from datamate.select.selector import DISSENT_KEY, SOLO_KEY, Selector, is_clean_rule, is_llm_gen  # noqa: E402
+
+SQL_GENS = ("G4", "G_select")
 
 
 def load(logs_dir, answers):
@@ -35,13 +39,9 @@ def load(logs_dir, answers):
         lg = json.load(open(os.path.join(logs_dir, f), encoding="utf-8"))
         if lg["id"] not in refs:
             continue
-        cands = []
-        for c in lg.get("candidates", []):
-            a = c.get("answer") or {}
-            ans = Answer(a.get("type", "abstain"), a.get("answer"), reason=a.get("reason", ""), meta=dict(c.get("meta") or {}))
-            det = {"flags": c.get("flags") or [], "family": c.get("family")} if c.get("flags") or c.get("family") else {}
-            cands.append(Candidate(c["gen"], ans, c.get("intent"), det))
-        recs.append({"id": lg["id"], "biz": lg["business_id"], "question": lg["question"], "cands": cands, "ref": refs[lg["id"]]})
+        cands = candidates_from_log(lg)          # with the risk flags the agent sets before selecting
+        recs.append({"id": lg["id"], "biz": lg["business_id"], "question": lg["question"], "cands": cands,
+                     "ref": refs[lg["id"]]})
     return recs
 
 
@@ -51,7 +51,10 @@ def ikey(c):
     return c.intent or "__none__"
 
 
-def fit(recs, k=10.0, prior=0.9, cap=0.985):
+def fit(recs, k=10.0, prior=0.9, cap=0.985, unans_prior=0.5):
+    """Bayesian shrinkage per generator x intent.  "unanswerable" keys shrink towards unans_prior: train has only
+    21 unanswerable questions, so with prior 0.9 an LLM's unanswerable claim got ~0.91 from almost no evidence
+    (on public it then replaced 46 value answers)."""
     cnt = collections.defaultdict(lambda: [0, 0])
     tot = collections.defaultdict(lambda: [0, 0])
     for r in recs:
@@ -63,9 +66,42 @@ def fit(recs, k=10.0, prior=0.9, cap=0.985):
             tot[c.gen][0 if s == 1 else 1] += 1
     rel = collections.defaultdict(dict)
     for (g, it), (ok, bad) in cnt.items():
-        rel[g][it] = round(min(cap, (ok + k * prior) / (ok + bad + k)), 4)
+        pr = unans_prior if it.startswith("unanswerable") else prior
+        rel[g][it] = round(min(cap, (ok + k * pr) / (ok + bad + k)), 4)
     for g, (ok, bad) in tot.items():
         rel[g]["__all__"] = round(min(cap, (ok + k * prior) / (ok + bad + k)), 4)
+    # how often a generator is right when it contradicts a clean rule answer (selector: dissent weight); prior 0.5
+    dis = collections.defaultdict(lambda: [0, 0])
+    for r in recs:
+        anchor = next((c for c in r["cands"] if is_clean_rule(c)), None)
+        if anchor is None:
+            continue
+        seen = set()
+        for c in r["cands"]:
+            if c is anchor or c.gen in seen or c.answer.type == "abstain" or c.answer.key() == anchor.answer.key():
+                continue
+            seen.add(c.gen)
+            s = score_one(c.answer.to_submission(r["id"]), r["ref"])
+            dis[c.gen][0 if s == 1 else 1] += 1
+    for g, (ok, bad) in dis.items():
+        rel[g][DISSENT_KEY] = round(min(cap, (ok + k * 0.5) / (ok + bad + k)), 4)
+    # how often an LLM candidate is right where no clean rule answer exists (selector: its weight there); prior 0.5,
+    # written for every LLM generator seen, so one never measured there weighs 0.5 (no fill-in on its own).
+    # The SQL routes do not go through the rule engine, so every held-out SQL answer counts (leave-intent-out view:
+    # G1 removed); G2 / G3 execute through the rule engine and count only where G1 itself had no clean answer.
+    solo = collections.defaultdict(lambda: [0, 0])
+    for r in recs:
+        clean = any(is_clean_rule(c) for c in r["cands"])
+        for c in r["cands"]:
+            if not is_llm_gen(c.gen) or c.answer.type == "abstain":
+                continue
+            counts = solo[c.gen]                          # registered: written even with no sample
+            if clean and not c.gen.startswith(SQL_GENS):
+                continue
+            s = score_one(c.answer.to_submission(r["id"]), r["ref"])
+            counts[0 if s == 1 else 1] += 1
+    for g, (ok, bad) in solo.items():
+        rel[g][SOLO_KEY] = round(min(cap, (ok + k * 0.5) / (ok + bad + k)), 4)
     return dict(rel)
 
 
@@ -83,6 +119,48 @@ def evaluate(recs, rel, tau):
                     "top_correct": correct, "gens": sorted({c.gen for c in r["cands"]}),
                     "intent": next((c.intent for c in r["cands"] if c.intent), None), "question": r["question"]})
     return out
+
+
+def generator_report(recs):
+    """Per generator: how often it answers, how often it is right, and how it does where G1 has no answer.
+    On train G1 is in-sample (rules written while reading train), so the end-to-end PA hides the LLMs: these
+    numbers are what separates a base model from a fine-tuned one."""
+    rows = {}
+    for r in recs:
+        g1 = next((c for c in r["cands"] if c.gen == "G1_rule" and c.answer.type != "abstain"), None)
+        g1_ok = g1 is not None and not (g1.answer.meta.get("oov") or g1.answer.meta.get("conflict"))
+        g1_key = g1.answer.key() if g1 is not None else None
+        seen = set()
+        for c in r["cands"]:
+            if c.answer.type == "abstain" or c.gen in seen:
+                continue
+            seen.add(c.gen)
+            d = rows.setdefault(c.gen, collections.Counter())
+            ok = score_one(c.answer.to_submission(r["id"]), r["ref"]) == 1
+            d["n"] += 1
+            d["ok"] += ok
+            if c.gen != "G1_rule":
+                if g1 is not None:
+                    d["with_g1"] += 1
+                    d["agree_g1"] += c.answer.key() == g1_key
+                if not g1_ok:
+                    d["solo"] += 1
+                    d["solo_ok"] += ok
+    return rows, len(recs)
+
+
+def print_generator_report(recs):
+    rows, n = generator_report(recs)
+    print("  per generator (each candidate scored against the train answer):")
+    print(f"    {'generator':12s} {'answers':>8s} {'coverage':>9s} {'precision':>10s} {'agree G1':>9s} "
+          f"{'G1 silent: n':>13s} {'precision':>10s}")
+    for g in sorted(rows, key=lambda x: (x != "G1_rule", x)):
+        d = rows[g]
+        agree = f"{d['agree_g1'] / d['with_g1']:.3f}" if d["with_g1"] else "-"
+        solo = f"{d['solo_ok'] / d['solo']:.3f}" if d["solo"] else "-"
+        print(f"    {g:12s} {d['n']:8d} {d['n'] / max(1, n):9.3f} {d['ok'] / max(1, d['n']):10.3f} {agree:>9s} "
+              f"{d['solo']:13d} {solo:>10s}")
+    return {g: dict(d) for g, d in rows.items()}
 
 
 def metrics(rows, bins=10):
@@ -113,10 +191,15 @@ def main():
     ap.add_argument("--tau", type=float, default=0.6)
     ap.add_argument("--out", default=os.path.join(ROOT, "runs", "validate"))
     ap.add_argument("--write-reliability", default=None)
+    ap.add_argument("--base-reliability", default=os.path.join(ROOT, "artifacts", "reliability.json"),
+                    help="when --write-reliability does not exist yet, start from this file (keeps G1's calibration)")
+    ap.add_argument("--include-g1", action="store_true",
+                    help="also overwrite G1_rule reliabilities (default: only the LLM generators are written)")
     a = ap.parse_args()
     recs = load(a.logs, a.answers)
     shops = sorted({r["biz"] for r in recs})
-    fold_of = {b: i % a.folds for i, b in enumerate(shops)}
+    from datamate.folds import fold_of as _fold_of
+    fold_of = _fold_of(shops, a.folds)               # same shop -> fold assignment as training / predict --fold
     rows = []
     for f in range(a.folds):
         rel = fit([r for r in recs if fold_of[r["biz"]] != f])
@@ -137,6 +220,17 @@ def main():
             rr += evaluate([r for r in recs if fold_of[r["biz"]] == f], rel, t)
         mm = metrics(rr)
         print(f"    tau={t:.2f}  PA={mm['PA']:.4f}  coverage={mm['coverage']:.3f}  precision={mm['precision']:.4f}")
+    m["generators"] = print_generator_report(recs)
+    llm = [dict(r, cands=[c for c in r["cands"] if c.gen != "G1_rule"]) for r in recs]
+    if any(r["cands"] for r in llm):
+        lrows = []
+        for f in range(a.folds):
+            rel = fit([r for r in llm if fold_of[r["biz"]] != f])
+            lrows += evaluate([r for r in llm if fold_of[r["biz"]] == f], rel, a.tau)
+        lm = metrics(lrows)
+        m["llm_only"] = {k: lm[k] for k in ("PA", "coverage", "precision")}
+        print(f"  LLM generators only (G1 removed): PA={lm['PA']:.4f}  coverage={lm['coverage']:.3f}  "
+              f"precision={lm['precision']:.4f}   <- compare this between base and fine-tuned runs")
     with open(os.path.join(a.out, "errors.jsonl"), "w", encoding="utf-8") as fo:
         for r in rows:
             if r["answered"] and r["score"] == -1:
@@ -145,13 +239,17 @@ def main():
     print(f"  wrong answers -> {os.path.join(a.out, 'errors.jsonl')}")
     if a.write_reliability:
         rel = fit(recs)
+        if not a.include_g1:
+            rel.pop("G1_rule", None)
+        src = a.write_reliability if os.path.exists(a.write_reliability) else a.base_reliability
         try:
-            cur = json.load(open(a.write_reliability, encoding="utf-8"))
+            cur = json.load(open(src, encoding="utf-8"))
         except Exception:  # noqa: BLE001
             cur = {}
         cur.update(rel)
         json.dump(cur, open(a.write_reliability, "w", encoding="utf-8"), ensure_ascii=False, indent=1, sort_keys=True)
-        print(f"  reliabilities of {sorted(rel)} -> {a.write_reliability}")
+        print(f"  reliabilities of {sorted(rel)} merged into {src} -> {a.write_reliability} "
+              f"(kept: {sorted(k for k in cur if k not in rel)})")
 
 
 if __name__ == "__main__":

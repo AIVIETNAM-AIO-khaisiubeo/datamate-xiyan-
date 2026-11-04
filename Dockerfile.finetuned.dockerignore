@@ -1,0 +1,14 @@
+.git
+.cache
+data
+runs
+outputs/*
+!outputs/merged
+result
+*.pkl
+eval_*.jsonl
+eval_*.txt
+roles_*.txt
+rev_check*.txt
+templates_*.txt
+__pycache__

@@ -1,5 +1,6 @@
 # DataMate-XiYan
 
+**Neuro-symbolic, multi-generator agent for Vietnamese question answering over business tables**  
 *Zalo AI Challenge 2026 — DataMate track*
 
 DataMate-XiYan trả lời câu hỏi tiếng Việt đời thường trực tiếp từ dữ liệu kinh doanh **CSV, Excel và SQLite**. Hệ thống kết hợp **bộ phân tích luật (rule-based semantic parser)**, các **LLM generators lấy cảm hứng từ XiYan-SQL**, một bộ thực thi xác định và cơ chế **abstention** nhằm tối ưu **Penalized Accuracy (PA)**.
@@ -99,7 +100,7 @@ data/
     └── calendar.csv
 ```
 
-> Repo này đã kèm sẵn hai split trong `data/train` và `data/public_test` (clone xong là chạy được).
+> Repo này đã kèm sẵn hai split trong `data/train` và `data/public_test` (clone xong là chạy được). Nếu dùng bản repo không có dữ liệu, giải nén dữ liệu của ban tổ chức theo đúng cấu trúc trên. `public_test` không có `answers.jsonl`. Kiểm tra lại quy định chia sẻ dữ liệu của cuộc thi trước khi để repo ở chế độ public.
 
 ### Bước 3 — Kiểm thử nhanh trên CPU
 
@@ -159,7 +160,7 @@ Các bảng nghiệp vụ chuẩn bao gồm đơn hàng, dòng bán, danh mục 
 | **G_select** | Selection model chọn một SQL trong các ứng viên đã tái tổ chức | Một phiếu bầu thêm cho selector, không bỏ qua ngưỡng abstain |
 
 **Code:** `datamate/nlu/rules.py`, `datamate/llm/generators.py`, `datamate/llm/sql_pipeline.py`, `datamate/select/selection_model.py`.  
-
+`ExampleBank` (TF-IDF) lấy few-shot từ train; G4 lấy few-shot SQL **đã kiểm chứng bằng thực thi** (`artifacts/sql_silver.jsonl`, đúng định dạng của từng generator).
 
 ### 3.4. Business Engine
 
@@ -171,11 +172,13 @@ Các phép tính tuân theo quy tắc nghiệp vụ của split: loại đơn h�
 
 **Code:** `datamate/select/selector.py`, `datamate/nlu/consistency.py`, `datamate/nlu/coverage.py`.
 
-Mỗi generator có thể đưa ra một đáp án ứng viên. Selector **gom nhóm theo giá trị đáp án đã thực thi**, kết hợp độ tin cậy theo generator/intent và trừ điểm khi các ứng viên mâu thuẫn. Các tín hiệu rủi ro gồm từ chưa giải thích được, câu hỏi và kiểu đáp án mâu thuẫn, tie ở ranh giới top-k hoặc luật nghiệp vụ thay đổi. Hệ thống trả lời khi điểm tin cậy qua ngưỡng, ngược lại chọn `abstain`. 
+Mỗi generator có thể đưa ra một đáp án ứng viên. Selector **gom nhóm theo giá trị đáp án đã thực thi**, kết hợp độ tin cậy theo generator/intent và trừ điểm khi các ứng viên mâu thuẫn. Các tín hiệu rủi ro gồm từ chưa giải thích được, câu hỏi và kiểu đáp án mâu thuẫn, tie ở ranh giới top-k hoặc luật nghiệp vụ thay đổi.
+
+Hệ thống trả lời khi điểm tin cậy qua ngưỡng, ngược lại chọn `abstain`. Các xác suất này là **ước lượng heuristic/calibrated reliability**, chưa nên coi là xác suất thống kê được hiệu chỉnh hoàn hảo trên dữ liệu chưa gặp.
 
 Với ứng viên SQL, selector còn **đọc nội dung SQL** (`datamate/select/sql_checks.py`): thiếu `is_valid`, cột ngày / khoảng thời gian sai, chặn trên dạng `<` bỏ mất ngày cuối, JOIN nhân bản dòng khi cộng cột cấp đơn, dùng tiền đã trả (`payments`, `total_due`) thay cho doanh thu, xếp hạng mặt hàng không lọc `kind = 'item'`, `LIMIT` khác top-k của câu hỏi, kết quả nhiều dòng khi cần một giá trị. Mỗi cờ hạ độ tin cậy của ứng viên. **Nhiều SQL của cùng một model không phải các phiếu độc lập:** selector gom theo *model family*, mỗi family chỉ có một phiếu trong mỗi nhóm đáp án, dù model đó sinh ở bao nhiêu schema hay định dạng.
 
-### 3.6. Các function build từ XiYan-SQL 
+### 3.6. Tương ứng với XiYan-SQL (Paper7, repo `alibaba/XiYan-SQL`)
 
 | Thành phần trong paper | Trong repo | File |
 |---|---|---|
@@ -187,7 +190,7 @@ Với ứng viên SQL, selector còn **đọc nội dung SQL** (`datamate/select
 | **Algorithm 3** — de-formalize, gom nhóm theo kết quả, sắp xếp liên nhóm/nội nhóm, đồng thuận ≥ ⌈\|L\|/2⌉ thì đưa hết, không thì mỗi nhóm một SQL ngắn nhất, `M_c(Q, S_un, E, L')` | Như paper; `M_c` dùng template chọn ứng viên của XiYan; lựa chọn của nó là **một phiếu** trong selector có hiệu chuẩn, không thay ngưỡng abstain (khác paper vì metric phạt câu sai) | `datamate/select/selection_model.py`, `datamate/select/selector.py` |
 | **Multi-task fine-tuning** (Text-to-SQL, question inference, evidence inference, self-refine) + **multi-format** + dữ liệu chọn listwise với near-miss | Sinh từ SQL đã kiểm chứng trên train: 7 loại bản ghi, negative "near-miss" bằng **controlled modification** (`sql_mutations.py`); xuất cả định dạng `alibaba/XiYan-SQLTraining` | `training/build_sql_sft.py`, `scripts/build_sql_silver.py` |
 
-**Điều chỉnh cho cuộc thi**:
+**Điều chỉnh bắt buộc vì luật cuộc thi** (khác paper có chủ đích):
 
 - **≤ 15B tham số cho *mọi* model, offline:** không có model embedding riêng (Qwen3-14B đã chiếm 14,8B), nên similarity dùng TF-IDF n-gram ký tự. `M_s`, generator và `M_c` cùng là một Qwen3-14B. Paper dùng GPT-4o, 4 model Qwen2.5-Coder-32B fine-tune và một selection model 7B, tức nhiều model riêng biệt.
 - **Đa dạng generator:** hiện là *một* model với 3 định dạng SQL qua prompt. Đây chưa phải các generator fine-tune riêng như paper, và chúng **không** được tính là phiếu độc lập. Muốn đi xa hơn thì train **một** model đa nhiệm, đa định dạng (định dạng chọn bằng chỉ dẫn trong prompt) để vẫn 14,8B. Adapter LoRA riêng cho từng định dạng phải được cộng vào tổng tham số (`scripts/count_params.py`).
@@ -201,10 +204,38 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 | Split / phiên bản | Đáp án giá trị | `unanswerable` | `abstain` | PA |
 |---|---:|---:|---:|---:|
 | Public test, submission 1 (1.000 câu) | 850 | 21 | 129 | **0.561** (điểm BTC) |
-| Public test, phiên bản 2 | 920 | 22 | 58 | **0,912 (điểm BTC)** |
+| Public test, phiên bản 2 (rule-only, sau phân tích lỗi public không nhãn) | 920 | 22 | 58 | **0.912** (điểm BTC) |
+| Public test, G1 + Qwen3-14B + LoRA, bộ chọn cũ | 901 | 74 | 25 | **0.777** (điểm BTC) |
+| Public test, G1 + Qwen3-14B-AWQ + LoRA (T4), bộ chọn mới, G4 đã sửa | 949 | 24 | 27 | **0.895** (điểm BTC) |
+| Public test, bản cuối 7c: phản đối của LLM đã hiệu chuẩn + chốt kiểm tra, replay trên log T4 | 959 | 26 | 15 | **0.909** (điểm BTC) |
 
+- **Train:** 3.000 đúng, 0 sai, 0 abstain. Đây là kết quả **trong mẫu**, do luật được phát triển khi phân tích train; **không** phải phép đo generalization độc lập.
+- **Public bản 1:** PA 0.561 do leaderboard cung cấp; số câu đúng/sai không được gắn nhãn trong public test.
+- **Public bản 2:** 0.912. Luật G1 của bản này được viết sau khi đọc câu hỏi và dữ liệu public (không nhãn), nên điểm
+  này lạc quan so với private.
+- **Public, có LLM, bộ chọn cũ:** 0.777. LLM thay 73 đáp án đúng của G1 và đổi 46 đáp án thành `unanswerable`. Bộ chọn
+  hiện tại sửa điều này (xem [`docs/RESULTS.md`](docs/RESULTS.md) §2).
+- **Public, có LLM, bộ chọn mới (T4):** 0.895. Không câu nào bị thay; chỉ khác bản 2 ở 49 câu LLM trả lời thay G1 và
+  18 câu LLM làm G1 bỏ trống. Theo hai điểm tổng, việc phủ quyết mất khoảng 14–18 điểm, còn các câu LLM trả lời thay
+  G1 chỉ đúng khoảng một nửa (phân tích ở [`docs/RESULTS.md`](docs/RESULTS.md) §2).
+- **Public, bản cuối 7c:** 0.909 (nhánh `colab-finetune-phasea-20261104-1534`, file
+  `submissions/public_test_lora_phasea_final_de716e81.jsonl`). Khác bản 0.895 ở 14 câu: 13 đáp án G1 được trả lại (cả 13
+  đều đúng) và 1 câu LLM sai bị bỏ. Vẫn kém bản 2 3 điểm, vì 48 câu LLM trả lời thay G1 chỉ đúng 42–52% và 5 câu còn bị
+  LLM phủ quyết.
 
 Chi tiết breakdown theo intent, thay đổi giữa hai bản và phân tích lỗi nằm trong [báo cáo kết quả](docs/RESULTS.md). File kết quả CPU được lưu tại [`submissions/public_test_rule_only.jsonl`](submissions/public_test_rule_only.jsonl).
+
+### 4.2. Các thành phần XiYan đo được không cần LLM (train, trong mẫu)
+
+| Thành phần | Phép đo | Kết quả | Lệnh |
+|---|---|---|---|
+| Silver SQL (frame → SQL → thực thi → so đáp án) | câu train có SQL đã kiểm chứng | **1.671** / 1.689 SQL biên dịch được (98,9 %), 3 định dạng / câu | `python scripts/build_sql_silver.py data/train` |
+| Schema Filter (bộ chọn cột heuristic, không LLM) | tỉ lệ câu mà schema giữ **đủ mọi cột** SQL đúng cần, số cột trung bình | S1: **91,5 %**, 11,1 cột · S2: **99,6 %**, 16,9 cột · full: 100 %, 42,3 cột | `python scripts/eval_schema_filter.py data/train` |
+| SQL checks | báo động nhầm trên 5.013 SQL đúng | **0** (0,0 %) | `python scripts/eval_sql_checks.py data/train` |
+| SQL checks | phát hiện near-miss làm đổi đáp án | thiếu `is_valid` 93 % · lệch tháng 100 % · `<` bỏ ngày cuối 99 % · JOIN nhân bản 100 % · `total_due` thay doanh thu 95 % · sai `LIMIT` 100 % | như trên |
+| Selector / calibration | business-level 5-fold trên log G1 | PA 0,9997, Brier 0,0011, ECE 0,022 (lạc quan: luật G1 viết trên toàn train) | `python scripts/validate.py runs/train/logs data/train/answers.jsonl` |
+
+Các số này **trong mẫu**: thuật ngữ của Schema Filter và luật G1 được viết khi đọc train. Chúng cho biết các thành phần làm đúng việc, **không** phải điểm generalization. Phần cần LLM (keyword/chọn cột bằng Qwen3-14B, sinh SQL, selection model) mới chạy với mock LLM (`tests/test_xiyan_pipeline.py`) và cần benchmark trên GPU.
 
 ## 5. Cấu trúc repository
 
@@ -246,20 +277,35 @@ datamate-xiyan-/
 │   ├── validate.py             # Business-level K-fold: PA, ECE, Brier, quét τ, log lỗi
 │   ├── check_submission.py     # Kiểm tra định dạng submission.jsonl trước khi nộp
 │   ├── count_params.py         # Tổng tham số mọi model dùng khi suy luận (≤ 15B)
+│   ├── publish_hf.py           # Đưa adapter / model merge lên Hugging Face Hub (private)
 │   └── ...                     # Công cụ kiểm tra và debug
 ├── artifacts/                  # Vocab, example bank, reliability
 ├── tests/                      # Unit tests và mock-LLM integration test
 ├── docs/RESULTS.md             # Số liệu và phân tích thực nghiệm
+├── docs/GPU_FINETUNE_GUIDE.md  # Chạy G1–G4 với Qwen3-14B, hiệu chuẩn, fine-tune từng bước
+├── docs/COLAB_GUIDE.md         # Fine-tune trên Colab Pro, lưu adapter về GitHub (Git LFS)
+├── notebooks/colab_finetune.ipynb  # Notebook Colab (sinh bởi scripts/make_colab_notebook.py)
+├── models/                     # Adapter LoRA đã fine-tune (Git LFS), xem models/README.md
 ├── submissions/                # File submission CPU hiện có
 ├── data/                       # train/ và public_test/ (đã kèm trong repo)
 ├── requirements.txt
 ├── requirements-train.txt
-├── Dockerfile
+├── Dockerfile                  # image với Qwen3-14B gốc (tải lúc build)
+├── Dockerfile.finetuned        # image với model đã fine-tune + merge (outputs/merged)
+├── Dockerfile.lora             # image = Qwen3-14B tải lúc build + adapter trong models/adapter
 └── predict.sh                  # Entry point của Docker
 ```
 
 
 ## 6. Huấn luyện và sử dụng LLM
+
+> **Hướng dẫn đầy đủ từng bước** (chạy G1–G4 với Qwen3-14B trên public test, hiệu chuẩn, ablation, fine-tune hai
+> pha có fold giữ riêng, Docker cho model đã fine-tune, kiểm tra luật): [`docs/GPU_FINETUNE_GUIDE.md`](docs/GPU_FINETUNE_GUIDE.md).
+> Mục này chỉ tóm tắt các lệnh.
+>
+> **Dùng Google Colab Pro?** Notebook [`notebooks/colab_finetune.ipynb`](notebooks/colab_finetune.ipynb) chạy toàn bộ:
+> train (checkpoint trên Drive, tự train tiếp khi mất kết nối), đánh giá trên fold giữ riêng, tạo file nộp, đẩy adapter
+> lên một nhánh GitHub qua Git LFS. Hướng dẫn: [`docs/COLAB_GUIDE.md`](docs/COLAB_GUIDE.md).
 
 ### 6.1. Backbone và vai trò
 
@@ -287,10 +333,10 @@ Những bước này tạo hoặc cập nhật vocabulary, few-shot example bank
 python training/build_sft_data.py \
   --split data/train \
   --out outputs/sft.jsonl \
-  --n-aug 3
+  --n-aug 3 [--holdout-fold 0]
 ```
 
-Mỗi ví dụ huấn luyện được tạo từ frame G1 **đã khớp đáp án train**; mục tiêu SFT bao gồm **rewrite**, **JSON frame** và **answerability**. Dữ liệu train có thể được augment bằng các biến thể câu hỏi tiếng Việt.
+Mỗi ví dụ huấn luyện được tạo từ frame G1 **đã khớp đáp án train**; mục tiêu SFT gồm **rewrite** (G3) và **JSON frame** (G2). Prompt giống hệt prompt lúc suy luận: vocab của shop, rulebook, few-shot lấy từ bank nhưng loại chính shop đó. Mỗi câu còn được augment thành các biến thể tiếng Việt lộn xộn. `--holdout-fold K` bỏ các shop của fold K ra để đo fine-tune một cách trung thực (`datamate.predict --fold K`).
 
 ### 6.3b. Dữ liệu multi-task / multi-format cho SQL generator và selection model (XiYan §III-C/D)
 
@@ -320,22 +366,20 @@ python scripts/count_params.py /models/llm outputs/lora_cte outputs/lora_alias
 ```bash
 python -m pip install -r requirements-train.txt
 
+# một model cho mọi nhiệm vụ (G2, G3, G4, selection); --qlora cho GPU 24–48 GB, bỏ --qlora trên GPU 80 GB
 python training/sft_lora.py \
   --model /models/llm \
-  --data outputs/sft.jsonl \
-  --out outputs/lora_sft
+  --data outputs/sft.jsonl outputs/sql_sft/sql_sft.jsonl \
+  --out outputs/lora_all --qlora --epochs 1 --max-per-task 6000 --max-len 8192
 ```
 
-**Quan trọng:** script `training/sft_lora.py` hiện load backbone ở **BF16** và áp dụng **LoRA**; **chưa cài QLoRA 4-bit/NF4**. Vì vậy không nên mặc định script hiện tại chạy được trên GPU Colab 16–24 GB. Cần kiểm tra VRAM và khả năng tương thích phiên bản `transformers/trl/peft` khi train thực tế.
+`--qlora` nạp model gốc ở 4-bit NF4 (bitsandbytes), vừa với GPU 24–48 GB; không có `--qlora` thì LoRA chạy BF16 và cần khoảng 80 GB. `--max-len 8192` để prompt dài (schema, rulebook, few-shot) không bị cắt mất phần đáp án. Chưa có số liệu huấn luyện thật; kiểm tra phiên bản `transformers/trl/peft` khi chạy.
 
-Để gộp adapter vào backbone:
+Để gộp adapter vào backbone (model kết quả vẫn 14,8B tham số):
 
 ```bash
-python training/sft_lora.py \
-  --merge \
-  --model /models/llm \
-  --adapter outputs/lora_sft \
-  --out outputs/merged
+python training/sft_lora.py --merge --model /models/llm --adapter outputs/lora_all --out outputs/merged
+python scripts/count_params.py outputs/merged
 ```
 
 ### 6.5. GRPO với reward theo PA (thử nghiệm)
@@ -369,7 +413,22 @@ python -m datamate.predict \
   --model /models/llm
 ```
 
-Nếu model không load được, backend có cơ chế **fallback sang G1 rule-only**. Kiểm tra log trước khi diễn giải kết quả là của LLM. Mã inference **không tự nạp LoRA adapter riêng biệt** từ thư mục `outputs/lora_sft`; dùng model đã merge hoặc tích hợp adapter vào backend trước khi đánh giá.
+Nếu model không load được, backend có cơ chế **fallback sang G1 rule-only**. Kiểm tra log trước khi diễn giải kết quả là của LLM. Mã inference **không tự nạp LoRA adapter riêng biệt**; dùng model đã merge (`--model outputs/merged`).
+
+Tuỳ chọn khi chạy (cũng đặt được qua biến môi trường, xem `docs/GPU_FINETUNE_GUIDE.md` Phần G):
+
+| Tham số | Ý nghĩa |
+|---|---|
+| `--tp N` | số GPU (2 trên 2 × RTX 5090, 1 trên một GPU 80 GB) |
+| `--quant fp8` | cùng model, lượng tử hoá FP8, cho GPU 24–48 GB |
+| `--max-len`, `--gpu-util` | context và bộ nhớ vLLM |
+| `--generators g2,g3,g4` | bật hoặc tắt từng generator LLM (ablation); G1 luôn chạy |
+| `--g4-scope unresolved\|all` | G4 chỉ chạy câu chưa chắc (mặc định) hoặc mọi câu |
+| `--fold K` | chỉ chạy các shop của fold K (đánh giá trên shop mà model fine-tune chưa thấy) |
+| `--lora DIR` | adapter LoRA đã fine-tune, chạy cạnh `--model` (base 14,77B + adapter 0,13B ≤ 15B) |
+| `--tau` | ngưỡng abstain |
+
+Trên split có `answers.jsonl` (train), agent tự loại few-shot của chính shop đang hỏi, để số đo và hiệu chuẩn không bị lộ đáp án.
 
 ## 7. Đánh giá và kiểm soát độ tin cậy
 
@@ -426,7 +485,7 @@ docker run --rm --gpus all --network none \
 
 ## 9. Tạo `submission.jsonl` để nộp leaderboard
 
-Lệnh viết cho bash (Linux, macOS, Git Bash); với PowerShell, thay `export X=y` bằng `$env:X = "y"`.
+Các bước dưới đây giả định repo đã có đủ code và `data/train`, `data/public_test`. Lệnh viết cho bash (Linux, macOS, Git Bash); với PowerShell, thay `export X=y` bằng `$env:X = "y"`.
 
 **Bước 1 — Cài đặt và kiểm tra môi trường**
 
@@ -455,7 +514,8 @@ Chọn một trong ba cách:
 # (a) CPU, rule-only: nhanh (~1–5 phút), tất định — cách đã tạo bản nộp hiện tại
 python -m datamate.predict --data data/public_test --out runs/public/submission.jsonl --llm none
 
-# (b) GPU, đầy đủ G1–G4 + selection model (cần model local, ví dụ Qwen3-14B tại /models/llm)
+# (b) GPU, đầy đủ G1–G4 + selection model (cần model local, ví dụ Qwen3-14B tại /models/llm).
+#     Trước đó nên hiệu chuẩn G2–G4 trên train và chạy ablation: docs/GPU_FINETUNE_GUIDE.md, Phần D
 python -m datamate.predict --data data/public_test --out runs/public_llm/submission.jsonl --llm vllm --model /models/llm
 # tuỳ chọn: chạy G4 cho mọi câu thay vì chỉ câu chưa chắc
 export DATAMATE_G4_SCOPE=all
@@ -491,13 +551,32 @@ python -c "import json;a=[json.loads(l) for l in open('submissions/public_test_r
 
 ## 10. Giới hạn và hướng phát triển
 
-1. **Generalization:** train đạt 1.000 nhưng đó là kết quả trong mẫu; public bản 1 đạt 0.561. Các cách diễn đạt mới, bảng có schema lạ và business chưa gặp vẫn là thách thức.
-2. **LLM chưa được benchmark:** G2/G3 và pipeline XiYan của G4 (keyword/chọn cột bằng LLM, sinh SQL, self-refine, selection model) mới chạy với mock LLM. Cần chạy inference thật với Qwen3-14B, rồi ablation trên validation theo business: `G1` → `+G2/G3` → `+G4 full schema` → `+S1/S2` → `+3 định dạng` → `+selection model`. Chỉ giữ thành phần nào làm PA tăng: thêm thành phần không tự động làm hệ thống chính xác hơn.
-3. **Đa dạng generator:** 3 định dạng SQL hiện là prompt của một model, nên chưa tương đương các generator fine-tune riêng của paper. Bước tiếp: train một model đa nhiệm, đa định dạng bằng `training/build_sql_sft.py` (vẫn 14,8B), rồi mới tính đến LoRA riêng cho từng định dạng nếu ngân sách tham số cho phép.
-4. **Training GPU còn thử nghiệm:** script SFT hiện là LoRA BF16, không phải QLoRA; GRPO chưa có số liệu xác nhận.
-5. **Calibration:** reliability của G4 và G_select hiện là giá trị mặc định (0,55–0,60). Cần hiệu chuẩn bằng `scripts/validate.py --write-reliability` trên log GPU của train. Hiệu chuẩn của G1 lấy từ train và có thể quá lạc quan.
-6. **Schema Filter không LLM** dùng TF-IDF + bảng thuật ngữ viết khi đọc train, nên với shop có cột lạ, recall có thể thấp hơn §4.2. Schema đầy đủ luôn được giữ làm baseline.
-7. **Rulebook drift và độ an toàn SQL:** thay đổi luật trong split khác có thể khiến engine không còn đúng. G4 chỉ chạy trên các view đã chuẩn hoá, DuckDB chỉ-đọc, có timeout cho mỗi truy vấn.
+Trạng thái của từng giới hạn (cập nhật 2026-11-04):
+
+1. **Generalization:** train 1.000 là trong mẫu. Public 0.561 → 0.912 sau khi viết thêm luật từ phân tích lỗi public
+   (không nhãn), nên 0.912 lạc quan so với private. Đã thêm các phép đo bằng nhãn train cho khái niệm mới
+   (`scripts/leave_intent_out.py`), cho cách trình bày dữ liệu mới (`scripts/perturb_split.py`), cho câu hỏi nhiễu
+   (`scripts/make_noisy_split.py`), và một chốt chặn cho dòng rulebook mà engine chưa biết (`select/form_guard.py`).
+2. **LLM đã chạy thật** (Qwen3-14B trên A100, và bản AWQ trên T4), trên 6 shop giữ riêng. LLM-only PA: model gốc
+   0.947, LoRA 0.982. G4 đúng khoảng 0.70–0.83, G_select kém (đúng 0.26–0.70). Chưa làm ablation từng thành phần.
+   Lần nộp đầu có LLM (0.777) kém bản rule-only vì bộ chọn: G2 và G3 được tính hai phiếu, `unanswerable` thiếu hiệu
+   chuẩn, G4 không đọc được SQL của adapter. Cả ba đã sửa.
+3. **Đa dạng generator:** đã train một adapter đa nhiệm, đa định dạng (`training/build_sql_sft.py`). Ba định dạng
+   SQL vẫn là cùng một model, nên bộ chọn tính chúng là **một** phiếu, và chỉ tin SQL khi ít nhất 2 lần thực thi cho
+   cùng kết quả.
+4. **Training GPU:** SFT QLoRA pha A đã chạy (A100, 822 bước). GRPO và pha B chưa chạy. Trên T4 chỉ suy luận được.
+5. **Calibration:** G2, G3, G4, G_select đã được hiệu chuẩn trên shop giữ riêng (`validate.py --write-reliability`).
+   Khoá `unanswerable` co về 0,5. Độ tin cậy của LLM khi nó **phản đối** một đáp án G1 không bị đánh dấu được đo riêng
+   (`__dissent__`); trên public, phần này nâng điểm từ 0.895 lên 0.909. Độ tin cậy của LLM khi G1 bỏ trống hoặc tự
+   đánh dấu được đo riêng (`__solo__`, prior 0,5). Với G2/G3, phép đo dựa trên rất ít câu (5–6 câu trên shop giữ riêng),
+   nên giá trị gần như là prior. Trên public, các câu đó đúng khoảng một nửa. Các lỗi tìm được ở đó (kết quả 0 của SQL,
+   hỏi giờ trả lời ngày, hỏi về thứ sổ sách không ghi) được chặn bằng bộ kiểm tra chung. Hiệu chuẩn G1 vẫn lấy từ train, nên lạc
+   quan.
+6. **Schema Filter không LLM:** chưa đổi. Kiểm tra cách trình bày dữ liệu (`perturb_split.py`) đo ingest, không đo
+   Schema Filter.
+7. **Rulebook drift:** ngoài việc kiểm tra cụm từ khoá, giờ mọi dòng rulebook mà engine chưa từng thấy
+   (`artifacts/known_rulebook_rows.json`) được phát hiện. Câu hỏi nhắc tới các dòng đó chỉ được trả lời bằng SQL, kèm
+   chính dòng đó làm evidence. An toàn SQL: chỉ trên view đã chuẩn hoá, DuckDB chỉ-đọc, có timeout.
 
 ### Nền tảng nghiên cứu
 
@@ -506,7 +585,8 @@ Thiết kế của repo **lấy cảm hứng** từ:
 - **XiYan-SQL: A Novel Multi-Generator Framework for Text-to-SQL** — schema filtering, multi-generator và lựa chọn ứng viên theo kết quả thực thi.
 - **When Silence is Golden: Can LLMs Learn to Abstain in Temporal QA and Beyond?** — học và ra quyết định từ chối trả lời để hạn chế lỗi.
 
+Repo này là một **ứng dụng điều chỉnh theo bài toán DataMate**, không phải bản triển khai chính thức hoặc tái tạo nguyên xi hai công trình.
 
 ---
 
-**Documentation:** [Detailed results](docs/RESULTS.md) · [Training code](training/) · [Tests](tests/) · [Docker entry point](predict.sh)
+**Documentation:** [Detailed results](docs/RESULTS.md) · [GPU & fine-tune guide](docs/GPU_FINETUNE_GUIDE.md) · [Training code](training/) · [Tests](tests/) · [Docker entry point](predict.sh)

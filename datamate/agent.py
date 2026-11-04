@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import sys
 import time
 import traceback
 from collections import OrderedDict, defaultdict
@@ -27,6 +28,7 @@ from .ingest.builder import load_biz
 from .nlu.rules import RuleParser
 from .nlu.timeparse import LunarCalendar
 from .rulebook import parse_rulebook
+from .select.form_guard import apply_guards
 from .select.selector import Candidate, Selector
 from .textnorm import fold
 
@@ -38,15 +40,22 @@ def default_config() -> dict:
     return {
         "llm": {"backend": os.environ.get("DATAMATE_LLM", "none"),
                 "model_path": os.environ.get("DATAMATE_MODEL", "/models/llm"),
+                "lora_path": os.environ.get("DATAMATE_LORA") or None,      # fine-tuned adapter next to the base model
                 "tensor_parallel_size": int(os.environ.get("DATAMATE_TP", "2")),
-                "max_model_len": 16384, "gpu_memory_utilization": 0.88, "enable_thinking": False},
+                "max_model_len": int(os.environ.get("DATAMATE_MAX_LEN", "16384")),
+                "gpu_memory_utilization": float(os.environ.get("DATAMATE_GPU_UTIL", "0.88")),
+                "quantization": os.environ.get("DATAMATE_QUANT") or None,       # e.g. 'fp8' on a single 24-32 GB GPU
+                "enable_thinking": False},
         "bank_path": os.path.join(ROOT, "artifacts", "example_bank.jsonl"),
         "reliability_path": os.path.join(ROOT, "artifacts", "reliability.json"),
         "vocab_path": os.path.join(ROOT, "artifacts", "known_vocab.json"),
         "tau": float(os.environ.get("DATAMATE_TAU", "0.6")),
         "time_budget_s": float(os.environ.get("DATAMATE_TIME_BUDGET", str(5.5 * 3600))),
-        "use_g2": True, "use_g3": True, "use_g4": True,
-        "g4_max_per_biz": 60,
+        # generators (ablation): DATAMATE_GENS="g2,g3,g4" by default; G1 always runs
+        "use_g2": "g2" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
+        "use_g3": "g3" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
+        "use_g4": "g4" in os.environ.get("DATAMATE_GENS", "g2,g3,g4"),
+        "g4_max_per_biz": int(os.environ.get("DATAMATE_G4_MAX", "60")),
         # XiYan pipeline for G4: filtered schemas (S1, S2) + full-schema baseline, SQL formats, selection model
         "g4_schemas": ["S1", "S2", "full"],
         "g4_scope": os.environ.get("DATAMATE_G4_SCOPE", "unresolved"),     # 'unresolved' | 'all'
@@ -64,7 +73,16 @@ class DataMateAgent:
         rb_path = os.path.join(split_dir, "rulebook.md")
         self.rulebook_text = open(rb_path, encoding="utf-8").read() if os.path.exists(rb_path) else ""
         self.rulebook = parse_rulebook(self.rulebook_text)
+        # rulebook rows the engine was never written for (new concepts of this split): see select/form_guard.py
+        from .rulebook import KNOWN_ROWS_PATH, new_rows
+        kp = os.path.join(ROOT, KNOWN_ROWS_PATH)
+        known = set(json.load(open(kp, encoding="utf-8"))["rows"]) if os.path.exists(kp) else None
+        self.new_rule_rows = new_rows(self.rulebook, known) if known is not None else []
+        if self.new_rule_rows:
+            print(f"[datamate] {len(self.new_rule_rows)} rulebook rows unknown to the rule engine: "
+                  f"{[r.name for r in self.new_rule_rows][:8]}", file=sys.stderr)
         self.cal = LunarCalendar(os.path.join(split_dir, "calendar.csv"))
+        self.labelled = os.path.exists(os.path.join(split_dir, "answers.jsonl"))
         self.selector = Selector(self.cfg["reliability_path"], tau=self.cfg["tau"])
         from .nlu.coverage import load_vocab
         self.vocab = load_vocab(self.cfg.get("vocab_path"))
@@ -84,6 +102,10 @@ class DataMateAgent:
             return
         from .llm.generators import ExampleBank, FrameGenerator, RewriteGenerator, SQLGenerator
         bank = ExampleBank.load(self.cfg["bank_path"]) if os.path.exists(self.cfg["bank_path"]) else None
+        self._banks = [x for x in (bank,) if x is not None]
+        if self.labelled and bank is not None and not bank.has_shop_ids:
+            print("[llm] WARNING: few-shot bank has no shop ids -> own-shop examples are not excluded on this labelled "
+                  "split; rebuild with scripts/build_artifacts.py", file=sys.stderr)
         digest = rulebook_digest(self.rulebook_text)
         self.g3 = RewriteGenerator(self.backend, bank)
         self.g2 = FrameGenerator(self.backend, bank, digest)
@@ -91,6 +113,8 @@ class DataMateAgent:
         from .llm.sql_pipeline import MultiSQLGenerator
         from .select.selection_model import SelectionModel
         self.mgen = MultiSQLGenerator(self.backend, load_sql_bank(self.cfg.get("sql_bank_path")))
+        if self.mgen.bank is not None:
+            self._banks.append(self.mgen.bank)
         self.selmodel = SelectionModel(self.backend) if self.cfg.get("use_selection_model") else None
 
     def time_left(self) -> float:
@@ -139,14 +163,22 @@ class DataMateAgent:
                 cands[q["id"]].append(Candidate("G1_rule", a, fr.intent))
                 trusted[fr.intent] = self.rulebook.intent_trusted(fr.intent)
                 log["candidates"].append({"gen": "G1_rule", "intent": fr.intent, "answer": a.to_submission(q["id"]),
-                                          "reason": a.reason,
-                                          "meta": {k: a.meta[k] for k in ("oov", "conflict", "tie") if a.meta.get(k)}})
+                                          "reason": a.reason, "meta": _risk_meta(a)})
             log["elapsed_g1_s"] = round(time.time() - tq, 4)
+            hit = self._new_rows_named(q["question"])
+            if hit:
+                log["new_rulebook_rows"] = [r.name for r in hit]
+                log["new_rulebook_text"] = [f"{r.name}: {r.text}" for r in hit]
+            apply_guards(q["question"], cands[q["id"]], log.get("new_rulebook_rows") or [])
             logs[q["id"]] = log
         # ---------------------------------------------------------------- LLM generators
-        if self.cfg["llm"].get("backend", "none") != "none" and self.time_left() > 600:
+        llm_on = any(self.cfg.get(k) for k in ("use_g2", "use_g3", "use_g4"))
+        if self.cfg["llm"].get("backend", "none") != "none" and llm_on and self.time_left() > 600:
             self._init_llm()
             if self.backend is not None:
+                # labelled split (train): never show a shop its own examples (honest evaluation / calibration)
+                for bk in getattr(self, "_banks", []):
+                    bk.exclude = {bid} if self.labelled else set()
                 try:
                     self._llm_stage(biz, rp, items, cands, logs)
                 except Exception:
@@ -154,6 +186,7 @@ class DataMateAgent:
         # ---------------------------------------------------------------- select + write logs
         res = {}
         for q in items:
+            apply_guards(q["question"], cands[q["id"]], logs[q["id"]].get("new_rulebook_rows") or [])
             ans, info = self.selector.select(cands[q["id"]], trusted)
             sub = ans.to_submission(q["id"])
             res[q["id"]] = sub
@@ -166,6 +199,15 @@ class DataMateAgent:
                 with open(os.path.join(log_dir, f"{q['id']}.json"), "w", encoding="utf-8") as fh:
                     json.dump(lg, fh, ensure_ascii=False, indent=1, default=str)
         return res
+
+    def _new_rows_named(self, question: str):
+        """Rulebook rows unknown to the engine whose name appears in the question (in order, small gaps allowed)."""
+        if not self.new_rule_rows:
+            return []
+        from .rulebook import concept_tokens, mentions
+        from .textnorm import normalize_question
+        nq = normalize_question(question)
+        return [r for r in self.new_rule_rows if mentions(nq, concept_tokens(r.key))]
 
     def _g1(self, rp: RuleParser, biz, question: str, today: dt.date):
         try:
@@ -209,6 +251,7 @@ class DataMateAgent:
         from .llm.generators import llm_json_to_text
         vocab = vocab_for(biz, rp)
         tl = time.time()
+        fam = getattr(self.backend, "family", None) or "llm"     # all routes of one LLM are one vote in the selector
         # G3: rewrite -> G1 ------------------------------------------------
         if self.cfg.get("use_g3"):
             prompts = [self.g3.build_prompt(q["question"], q["as_of_date"], vocab) for q in items]
@@ -219,9 +262,10 @@ class DataMateAgent:
                     fr, a = self._g1(rp, biz, text, today)
                     logs[q["id"]].setdefault("g3_rewrite", text)
                     if fr is not None:
-                        cands[q["id"]].append(Candidate("G3_rewrite", a, fr.intent, {"text": text}))
-                        logs[q["id"]]["candidates"].append({"gen": "G3_rewrite", "intent": fr.intent,
-                                                             "answer": a.to_submission(q["id"]), "text": text})
+                        cands[q["id"]].append(Candidate("G3_rewrite", a, fr.intent, {"text": text, "family": fam}))
+                        logs[q["id"]]["candidates"].append({"gen": "G3_rewrite", "intent": fr.intent, "family": fam,
+                                                             "answer": a.to_submission(q["id"]), "text": text,
+                                                             "meta": _risk_meta(a)})
         # G2: JSON frame -> canonical text -> G1 ---------------------------
         if self.cfg.get("use_g2") and self.time_left() > 900:
             prompts = [self.g2.build_prompt(q["question"], q["as_of_date"], vocab) for q in items]
@@ -232,22 +276,29 @@ class DataMateAgent:
                     logs[q["id"]]["g2_json"] = js
                     if js.get("intent") == "unanswerable":
                         a = Answer("unanswerable", reason=js.get("reason") or "")
-                        cands[q["id"]].append(Candidate("G2_frame", a, "unanswerable", {"json": js}))
+                        cands[q["id"]].append(Candidate("G2_frame", a, "unanswerable", {"json": js, "family": fam}))
+                        logs[q["id"]]["candidates"].append({"gen": "G2_frame", "intent": "unanswerable", "family": fam,
+                                                             "answer": a.to_submission(q["id"])})
                         continue
                     text = llm_json_to_text(js)
                     if not text:
                         continue
                     fr, a = self._g1(rp, biz, text, today)
                     if fr is not None:
-                        cands[q["id"]].append(Candidate("G2_frame", a, fr.intent, {"json": js, "text": text}))
-                        logs[q["id"]]["candidates"].append({"gen": "G2_frame", "intent": fr.intent,
-                                                             "answer": a.to_submission(q["id"]), "text": text})
+                        cands[q["id"]].append(Candidate("G2_frame", a, fr.intent, {"json": js, "text": text, "family": fam}))
+                        logs[q["id"]]["candidates"].append({"gen": "G2_frame", "intent": fr.intent, "family": fam,
+                                                             "answer": a.to_submission(q["id"]), "text": text,
+                                                             "meta": _risk_meta(a)})
         # G4: XiYan pipeline (Schema Filter -> multi-schema x multi-format SQL -> self-refine -> selection) -----
         if self.cfg.get("use_g4") and self.time_left() > 1200:
+            for q in items:                     # flags first, so that a flagged rule answer sends the question to G4
+                apply_guards(q["question"], cands[q["id"]], logs[q["id"]].get("new_rulebook_rows") or [])
             if self.cfg.get("g4_scope") == "all":
                 need = list(items)
             else:
-                need = [q for q in items if self.selector.select(cands[q["id"]])[0].type == "abstain"]
+                # new rulebook concepts first: only the SQL route can answer them
+                need = sorted((q for q in items if self.selector.select(cands[q["id"]])[0].type == "abstain"),
+                              key=lambda q: not logs[q["id"]].get("new_rulebook_rows"))
             need = need[: self.cfg["g4_max_per_biz"]]
             if need:
                 self._xiyan_sql(biz, rp, need, cands, logs)
@@ -275,7 +326,10 @@ def _xiyan_sql_impl(self, biz, rp, need, cands, logs):
     want = set(self.cfg.get("g4_schemas") or ["full"])
     jobs, union_cols = [], {}
     tis = [parse_time(normalize_question(q["question"]), dt.date.fromisoformat(q["as_of_date"]), self.cal) for q in need]
-    evids = [ev.evidence(q["question"], q["as_of_date"]) for q in need]
+    # a rulebook row the engine does not know is the definition the SQL must implement: always put it first
+    evids = [("\n".join(f"- (luật mới) {t}" for t in logs[q["id"]].get("new_rulebook_text", [])) + "\n"
+              if logs[q["id"]].get("new_rulebook_text") else "") + ev.evidence(q["question"], q["as_of_date"])
+             for q in need]
     fress = sf.run_batch([q["question"] for q in need], evids, [ti.text_wo_time for ti in tis])   # batched LLM calls
     for q, ti, evid, fres in zip(need, tis, evids, fress):
         today = dt.date.fromisoformat(q["as_of_date"])
@@ -306,10 +360,13 @@ def _xiyan_sql_impl(self, biz, rp, need, cands, logs):
         for c in lst:
             if c.ok:
                 a = Answer(c.answer_type, c.value)
-                det = {"sql": c.sql, "family": c.family, "flags": c.flags, "schema_id": c.schema_id, "fmt": c.fmt}
+                support = 1 + len(c.also)              # prompts (schema x format) that produced this same SQL
+                det = {"sql": c.sql, "family": c.family, "flags": c.flags, "schema_id": c.schema_id, "fmt": c.fmt,
+                       "support": support}
                 cands[j["qid"]].append(Candidate(c.generator, a, None, det))
                 logs[j["qid"]]["candidates"].append({"gen": c.generator, "answer": a.to_submission(j["qid"]),
-                                                     "sql": c.sql, "schema": c.schema_id, "flags": c.flags})
+                                                     "sql": c.sql, "schema": c.schema_id, "flags": c.flags,
+                                                     "family": c.family, "support": support})
         shown, mode, top = reorganize(lst, order)
         logs[j["qid"]]["selection"] = {"mode": mode, "largest_cluster": top, "n_shown": len(shown)}
         if self.selmodel is not None and len(shown) > 1 and self.time_left() > 600:
@@ -323,10 +380,11 @@ def _xiyan_sql_impl(self, biz, rp, need, cands, logs):
             if c is None:
                 continue
             a = Answer(c.answer_type, c.value)
-            cands[sj["qid"]].append(Candidate("G_select", a, None,
-                                              {"sql": c.sql, "family": "selector:" + c.family, "flags": c.flags}))
+            # the selection model is the same LLM again: same family, so its pick is not an extra vote
+            cands[sj["qid"]].append(Candidate("G_select", a, None, {"sql": c.sql, "family": c.family, "flags": c.flags}))
             logs[sj["qid"]]["selection"]["chosen"] = c.sql
-            logs[sj["qid"]]["candidates"].append({"gen": "G_select", "answer": a.to_submission(sj["qid"]), "sql": c.sql})
+            logs[sj["qid"]]["candidates"].append({"gen": "G_select", "answer": a.to_submission(sj["qid"]), "sql": c.sql,
+                                                  "family": c.family, "flags": c.flags})
     runner.close()
 
 
@@ -342,8 +400,13 @@ def load_sql_bank(path: Optional[str]):
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             r = json.loads(line)
-            items.append({"q": r["question"], "intent": r["intent"], "sql": r["sql"]})
+            items.append({"q": r["question"], "intent": r["intent"], "sql": r["sql"], "biz": r["business_id"]})
     return ExampleBank(items) if items else None
+
+
+def _risk_meta(a: Answer) -> dict:
+    """Risk signals the selector reads (logged so that runs can be replayed / calibrated exactly)."""
+    return {k: a.meta[k] for k in ("oov", "conflict", "tie") if a.meta.get(k)}
 
 
 def _guess_type(q: str) -> str:

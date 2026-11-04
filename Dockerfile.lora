@@ -1,0 +1,34 @@
+# DataMate-XiYan: Qwen3-14B base (downloaded at build) + the fine-tuned LoRA adapter committed in models/adapter.
+# The adapter is served next to the base weights by vLLM (DATAMATE_LORA), so no 30 GB merged copy is needed.
+# Parameters: base 14.77B + adapter ~0.13B (rank 32) < 15B -> check with
+#   python scripts/count_params.py /models/qwen3-14b models/adapter
+# Before building: git lfs pull   (otherwise models/adapter/*.safetensors are only LFS pointer files)
+#   docker build -f Dockerfile.lora -t datamate-xiyan:lora .
+ARG BASE_IMAGE=vllm/vllm-openai:v0.12.0
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN python3 -m pip install -r /app/requirements.txt
+
+ARG MODEL_ID=Qwen/Qwen3-14B
+ARG MODEL_DIR=/models/llm
+RUN python3 -m pip install "huggingface_hub[cli]>=0.24" && \
+    huggingface-cli download ${MODEL_ID} --local-dir ${MODEL_DIR} --exclude "*.pth" "original/*" && \
+    rm -rf /root/.cache/huggingface
+
+COPY models/adapter /models/adapter
+RUN python3 -c "import json,sys; json.load(open('/models/adapter/adapter_config.json')); \
+  h=open('/models/adapter/adapter_model.safetensors','rb').read(64); \
+  sys.exit('adapter is a Git LFS pointer: run git lfs pull before docker build') if h.startswith(b'version https://git-lfs') else None"
+
+COPY . /app
+RUN chmod +x /app/predict.sh
+
+ENV DATAMATE_LLM=vllm DATAMATE_MODEL=${MODEL_DIR} DATAMATE_LORA=/models/adapter DATAMATE_TP=2 \
+    DATAMATE_CACHE=/tmp/datamate_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1
+
+ENTRYPOINT []
+CMD ["/app/predict.sh"]

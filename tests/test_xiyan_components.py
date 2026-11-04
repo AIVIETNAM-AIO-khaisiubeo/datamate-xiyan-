@@ -113,3 +113,16 @@ def test_one_model_family_is_one_vote():
     flagged = [Candidate("G4_base", Answer("number", 5), None, {"family": "qwen", "flags": [("missing_is_valid", 0.9)]})]
     _, infof = sel.select(flagged)
     assert infof["p"] < info1["p"]
+
+
+def test_few_shot_excludes_own_shop_and_folds_are_shared():
+    from datamate.folds import fold_of, fold_shops
+    from datamate.llm.generators import ExampleBank
+    bank = ExampleBank([{"q": "doanh thu tháng 7", "intent": "revenue", "biz": "a"},
+                        {"q": "doanh thu tháng 8", "intent": "revenue", "biz": "b"}])
+    assert {x["biz"] for x in bank.topk("doanh thu tháng 7", 5)} == {"a", "b"}
+    bank.exclude = {"a"}
+    assert {x["biz"] for x in bank.topk("doanh thu tháng 7", 5)} == {"b"}
+    shops = [f"biz_{i}" for i in range(101, 131)]
+    f = fold_of(shops, 5)
+    assert fold_shops(shops, 0, 5) == {b for b in shops if f[b] == 0} and len(fold_shops(shops, 0, 5)) == 6
