@@ -563,8 +563,10 @@ assert token, "Chưa có secret GITHUB_TOKEN (biểu tượng chìa khoá bên t
 assert shutil.which("git-lfs"), "Chưa cài git-lfs: chạy lại ô clone ở mục 2"
 env = dict(os.environ, GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0")
 HELPER = 'credential.helper=!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+# máy Colab mới chưa có tên / email cho git, nên commit báo "Author identity unknown": đặt cho từng lệnh
+IDENTITY = ["-c", "user.name=datamate-colab", "-c", "user.email=datamate-colab@users.noreply.github.com"]
 def git(*args, quiet=False, check=True):
-    r = subprocess.run(["git", "-C", REPO, "-c", "credential.helper=", "-c", HELPER, *args],
+    r = subprocess.run(["git", "-C", REPO, *IDENTITY, "-c", "credential.helper=", "-c", HELPER, *args],
                        env=env, capture_output=True, text=True)
     out = (r.stdout + r.stderr).replace(token, "***").strip()
     if out and not quiet:
