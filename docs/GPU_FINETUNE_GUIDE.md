@@ -1,5 +1,8 @@
 # Chạy đầy đủ G1–G4 với Qwen3-14B và fine-tune — hướng dẫn từng bước
 
+> **Scope:** Hướng dẫn vận hành GPU/fine-tune, không phải báo cáo đã xác nhận cải thiện accuracy. Xem [EXPERIMENTS.md](EXPERIMENTS.md) để biết những gì đã được đo và [XIYAN_ADAPTATION.md](XIYAN_ADAPTATION.md) để đối chiếu thuật toán gốc.
+
+
 Tài liệu này dành cho người đã clone repo, có `data/train` và `data/public_test`, và muốn:
 
 1. tạo `submission.jsonl` cho `public_test` bằng **toàn bộ hệ thống** (G1 + G2 + G3 + G4 + selection model, dùng
