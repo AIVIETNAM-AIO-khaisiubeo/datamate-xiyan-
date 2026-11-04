@@ -1,7 +1,10 @@
 # Fine-tune trên Google Colab Pro và lưu kết quả về GitHub
 
+> **Lưu ý phiên bản:** Link Colab mở notebook trên branch `colab-finetune-phasea-20261104-1534`. Các đoạn hướng dẫn bên dưới ghi cả các bước debugging lịch sử; không xem chúng là trạng thái hiện tại của mọi lần chạy. Đọc [EXPERIMENTS.md](EXPERIMENTS.md) để phân biệt số đo local fold và điểm nộp chính thức.
+
+
 Notebook: [`notebooks/colab_finetune.ipynb`](../notebooks/colab_finetune.ipynb). Mở thẳng trên Colab:
-`https://colab.research.google.com/github/AIVIETNAM-AIO-khaisiubeo/datamate-xiyan-/blob/gpu-finetune-guide/notebooks/colab_finetune.ipynb`
+`https://colab.research.google.com/github/AIVIETNAM-AIO-khaisiubeo/datamate-xiyan-/blob/colab-finetune-phasea-20261104-1534/notebooks/colab_finetune.ipynb`
 
 Notebook làm đúng quy trình hai pha của [`GPU_FINETUNE_GUIDE.md`](GPU_FINETUNE_GUIDE.md), Phần F, nhưng đã chỉnh cho
 Colab: chọn QLoRA hay LoRA theo GPU, lưu checkpoint lên Drive, train tiếp khi mất kết nối, và cuối cùng đẩy kết quả
