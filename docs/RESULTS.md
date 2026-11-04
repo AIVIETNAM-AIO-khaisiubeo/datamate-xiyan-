@@ -47,6 +47,7 @@ Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 
 | 2 | G1 rule-only sau phân tích lỗi public không nhãn (`submissions/public_test_rule_only.jsonl`) | **0.912** |
 | 3 | G1 + Qwen3-14B + LoRA pha A (`colab-finetune-phasea`) | **0.777** |
 | 4 | G1 + Qwen3-14B-AWQ + LoRA pha A trên T4, bộ chọn mới, G4 đã sửa (ô 7b; nhánh `colab-finetune-phasea-20261104-1350`, `submissions/public_test_lora_phasea.jsonl`, sha256 `8124e92b…`) | **0.895** |
+| 5 | Bản cuối: bộ chọn có hiệu chuẩn sự phản đối + kiểm tra hình thức + chốt rulebook, replay trên log của bản 4 (ô 7c, chỉ CPU; nhánh `colab-finetune-phasea-20261104-1534`, `submissions/public_test_lora_phasea_final_de716e81.jsonl`, sha256 `de716e81…`) | **0.909** |
 
 Bản 2 cao một phần vì luật G1 được viết sau khi đọc câu hỏi và dữ liệu public (không nhãn). Đó là luật chung, nhưng
 được chọn bằng cách nhìn public, nên 0.912 lạc quan so với private.
@@ -70,7 +71,7 @@ của nó phải nằm trong khoảng 0.845–0.979.
 Cộng lại bằng −17, nên *a* = *c* + 7. Bản 2 đúng khoảng 98% số câu nó trả lời (0.912 với 942 câu trả lời: khoảng 927
 đúng, 15 sai), nên phần lớn 18 câu bị bỏ trống có lẽ là câu G1 đúng (*c* ≈ 16–18). Từ đó:
 - **Việc LLM phủ quyết G1 làm mất khoảng 14–18 điểm.** Bản 5 sửa điều này: LLM chỉ phủ quyết khi, trên shop giữ riêng, nó
-  đúng nhiều hơn sai ở những câu trái ý G1.
+  đúng nhiều hơn sai ở những câu trái ý G1. (Bản 5 lấy lại 13 điểm; xem điểm bản 5 bên dưới.)
 - **Các câu LLM trả lời thay G1 đúng khoảng 47–51%** (*a* ≈ 23–25 trên 49), tức gần như tung đồng xu, nên đóng góp
   khoảng 0. Trên shop giữ riêng của train, các câu này gần như luôn đúng, nhưng chỉ có 5–6 câu như vậy và đều giống
   train. Hiệu chuẩn của LLM ở những câu G1 không chắc đang quá lạc quan. Đây là điểm cần sửa tiếp theo, và quan trọng cho
@@ -89,6 +90,22 @@ train:
 - **Dòng rulebook mà engine chưa biết.** Các dòng của train và public được ghi vào `artifacts/known_rulebook_rows.json`.
   Ở private, câu hỏi nhắc tới một dòng mới thì G1, G2, G3 bị đánh dấu, và chỉ SQL kèm chính dòng đó (làm evidence) được
   trả lời. Trên train và public, chốt này không đổi gì.
+
+**Điểm bản 5: 0.909.** Bản 5 giống bản 4 ở 986/1000 câu. 14 câu khác nhau gồm:
+- 13 câu bản 4 bỏ trống vì LLM trái ý G1; bản 5 trả lại đáp án G1;
+- 1 câu LLM trả lời thay G1 ở bản 4; bản 5 bỏ trống câu đó.
+
+Mỗi câu chỉ đổi điểm được ±1, nên trước khi nộp, điểm bản 5 phải nằm trong khoảng 0.881–0.909. 0.909 là mức cao nhất,
+và chỉ đạt được theo một cách: **cả 13 đáp án G1 được trả lại đều đúng, và câu LLM bị bỏ là câu sai.** Từ đó:
+- **Hiệu chuẩn sự phản đối lấy lại đúng 13 điểm** (+1 điểm từ câu LLM sai bị bỏ). Ở bản 4, việc LLM phủ quyết G1 mất
+  8 + 2*c*₅ điểm, với *c*₅ là số đáp án G1 đúng trong 5 câu mà bản 5 vẫn bỏ trống.
+- **So với bản 2, bản 5 kém 3 điểm.** Bản 5 = bản 2 + 48 câu LLM trả lời thay G1 − 5 câu G1 bị bỏ trống, nên
+  (2*a*₄₈ − 48) − (2*c*₅ − 5) = −3, tức *a*₄₈ = *c*₅ + 20. 48 câu LLM trả lời thay G1 đúng 20–25 câu (42–52%). Nếu G1
+  đúng cả 5 câu còn bỏ trống, như với 13 câu kia, thì LLM đúng 25/48: 48 câu này được +2 điểm, còn 5 câu bỏ trống mất 5.
+
+Hai chỗ còn kém bản 2 là các câu LLM trả lời thay G1 (vẫn gần như tung đồng xu) và 5 câu LLM còn phủ quyết. Ở private,
+G1 sẽ bỏ trống hoặc tự đánh dấu nhiều câu hơn, nên độ chính xác của LLM ở những câu này quyết định phần lớn điểm có LLM.
+Bước tiếp theo: hiệu chuẩn riêng độ tin cậy của LLM khi G1 bỏ trống hoặc tự đánh dấu (khởi điểm 0,5, như `__dissent__`).
 
 **Đổi cách trình bày dữ liệu** (`scripts/perturb_split.py`, 6 shop của fold 0, 553 câu, chỉ G1). Không giá trị nào bị
 đổi; chỉ cách sắp xếp file khác đi:

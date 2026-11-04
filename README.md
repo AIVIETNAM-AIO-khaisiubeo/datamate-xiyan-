@@ -207,6 +207,7 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 | Public test, phiên bản 2 (rule-only, sau phân tích lỗi public không nhãn) | 920 | 22 | 58 | **0.912** (điểm BTC) |
 | Public test, G1 + Qwen3-14B + LoRA, bộ chọn cũ | 901 | 74 | 25 | **0.777** (điểm BTC) |
 | Public test, G1 + Qwen3-14B-AWQ + LoRA (T4), bộ chọn mới, G4 đã sửa | 949 | 24 | 27 | **0.895** (điểm BTC) |
+| Public test, bản cuối 7c: phản đối của LLM đã hiệu chuẩn + chốt kiểm tra, replay trên log T4 | 959 | 26 | 15 | **0.909** (điểm BTC) |
 
 - **Train:** 3.000 đúng, 0 sai, 0 abstain. Đây là kết quả **trong mẫu**, do luật được phát triển khi phân tích train; **không** phải phép đo generalization độc lập.
 - **Public bản 1:** PA 0.561 do leaderboard cung cấp; số câu đúng/sai không được gắn nhãn trong public test.
@@ -217,6 +218,10 @@ Các số dưới đây lấy từ báo cáo hiện có tại [`docs/RESULTS.md`
 - **Public, có LLM, bộ chọn mới (T4):** 0.895. Không câu nào bị thay; chỉ khác bản 2 ở 49 câu LLM trả lời thay G1 và
   18 câu LLM làm G1 bỏ trống. Theo hai điểm tổng, việc phủ quyết mất khoảng 14–18 điểm, còn các câu LLM trả lời thay
   G1 chỉ đúng khoảng một nửa (phân tích ở [`docs/RESULTS.md`](docs/RESULTS.md) §2).
+- **Public, bản cuối 7c:** 0.909 (nhánh `colab-finetune-phasea-20261104-1534`, file
+  `submissions/public_test_lora_phasea_final_de716e81.jsonl`). Khác bản 0.895 ở 14 câu: 13 đáp án G1 được trả lại (cả 13
+  đều đúng) và 1 câu LLM sai bị bỏ. Vẫn kém bản 2 3 điểm, vì 48 câu LLM trả lời thay G1 chỉ đúng 42–52% và 5 câu còn bị
+  LLM phủ quyết.
 
 Chi tiết breakdown theo intent, thay đổi giữa hai bản và phân tích lỗi nằm trong [báo cáo kết quả](docs/RESULTS.md). File kết quả CPU được lưu tại [`submissions/public_test_rule_only.jsonl`](submissions/public_test_rule_only.jsonl).
 
@@ -562,7 +567,9 @@ Trạng thái của từng giới hạn (cập nhật 2026-11-04):
 4. **Training GPU:** SFT QLoRA pha A đã chạy (A100, 822 bước). GRPO và pha B chưa chạy. Trên T4 chỉ suy luận được.
 5. **Calibration:** G2, G3, G4, G_select đã được hiệu chuẩn trên shop giữ riêng (`validate.py --write-reliability`).
    Khoá `unanswerable` co về 0,5. Độ tin cậy của LLM khi nó **phản đối** một đáp án G1 không bị đánh dấu được đo riêng
-   (`__dissent__`). Hiệu chuẩn G1 vẫn lấy từ train, nên lạc quan.
+   (`__dissent__`); trên public, phần này nâng điểm từ 0.895 lên 0.909. Độ tin cậy của LLM khi G1 bỏ trống hoặc tự
+   đánh dấu **chưa** được đo riêng; trên public, các câu đó đúng khoảng một nửa. Hiệu chuẩn G1 vẫn lấy từ train, nên lạc
+   quan.
 6. **Schema Filter không LLM:** chưa đổi. Kiểm tra cách trình bày dữ liệu (`perturb_split.py`) đo ingest, không đo
    Schema Filter.
 7. **Rulebook drift:** ngoài việc kiểm tra cụm từ khoá, giờ mọi dòng rulebook mà engine chưa từng thấy
