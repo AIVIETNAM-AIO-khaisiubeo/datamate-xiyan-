@@ -105,3 +105,36 @@ def test_notebook_push_cell_checks_lfs():
     assert "apt-get -qq install -y git-lfs" in src                        # Colab has no git-lfs
     assert "version https://git-lfs" in src and "ls-remote" in src         # pointer check before push, branch check after
     assert "DATAMATE_G4_SCOPE=all" in src and "make_noisy_split.py" in src
+
+
+def test_require_llm_fails_loudly_instead_of_rule_only():
+    import pytest
+    from datamate.llm.backend import NullBackend, make_backend
+    assert isinstance(make_backend({"backend": "vllm", "model_path": "/nonexistent/model"}), NullBackend)
+    with pytest.raises(RuntimeError):
+        make_backend({"backend": "vllm", "model_path": "/nonexistent/model", "require_llm": True})
+
+
+def test_awq_checkpoint_counts_unpacked_parameters():
+    import struct
+    import count_params
+    with tempfile.TemporaryDirectory() as d:
+        hdr = {"l.qweight": {"dtype": "I32", "shape": [64, 8], "data_offsets": [0, 0]},
+               "l.qzeros": {"dtype": "I32", "shape": [1, 8], "data_offsets": [0, 0]},
+               "l.scales": {"dtype": "F16", "shape": [1, 64], "data_offsets": [0, 0]},
+               "norm.weight": {"dtype": "F16", "shape": [10], "data_offsets": [0, 0]}}
+        b = json.dumps(hdr).encode()
+        open(os.path.join(d, "model.safetensors"), "wb").write(struct.pack("<Q", len(b)) + b)
+        json.dump({"quantization_config": {"quant_method": "awq", "bits": 4}}, open(os.path.join(d, "config.json"), "w"))
+        assert count_params.count_dir(d) == 64 * 64 + 10       # 4-bit packing undone, quantisation metadata skipped
+
+
+def test_notebook_has_a_t4_profile():
+    nb = json.load(open(os.path.join(ROOT, "notebooks", "colab_finetune.ipynb"), encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "--quant awq --dtype half --enforce-eager" in src and "Qwen/Qwen3-14B-AWQ" in src
+    assert "--require-llm" in src and "CAN_TRAIN" in src
+    from datamate.predict import main  # noqa: F401  (flags below must exist)
+    import datamate.predict as pr
+    text = open(pr.__file__, encoding="utf-8").read()
+    assert all(f in text for f in ("--dtype", "--enforce-eager", "--require-llm"))

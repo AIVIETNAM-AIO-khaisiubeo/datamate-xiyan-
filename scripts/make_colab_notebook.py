@@ -18,30 +18,39 @@ def code(text):
 md("""
 # DataMate-XiYan — fine-tune Qwen3-14B trên Google Colab và lưu kết quả về GitHub
 
-Notebook chạy toàn bộ quy trình trong `docs/GPU_FINETUNE_GUIDE.md` trên Colab Pro:
+Notebook chạy quy trình trong `docs/GPU_FINETUNE_GUIDE.md` trên Colab:
 
-1. **Cài đặt**: kiểm tra GPU, nối Google Drive, clone repo, cài thư viện, tải Qwen3-14B.
+1. **Cài đặt**: kiểm tra GPU, nối Google Drive, clone repo, cài thư viện, tải model.
 2. **Dữ liệu**: tạo dữ liệu fine-tune từ **train** (không bao giờ dùng public test).
 3. **Huấn luyện**: QLoRA hoặc LoRA. Checkpoint lưu trên Drive, mất kết nối thì chạy lại để train tiếp.
 4. **Đánh giá** (pha A): so rule-only, model gốc và model fine-tune trên bản nhiễu của 6 shop giữ riêng (PA cả hệ
    thống, và PA của riêng các generator LLM), rồi hiệu chuẩn độ tin cậy.
-5. **Tạo `submission.jsonl`** cho public test bằng model đã fine-tune, rồi so với bản rule-only (không cần nhãn).
+5. **Tạo `submission.jsonl`** cho public test, rồi so với bản rule-only (không cần nhãn).
 6. **Lưu về GitHub**: adapter (Git LFS, khoảng 0,26 GB), reliability, file nộp, ghi chú huấn luyện, đẩy lên một nhánh mới.
 
+**Notebook tự chọn cách chạy theo GPU** (ô GPU ở mục 2 in ra `PROFILE`):
+
+| GPU | `PROFILE` | Train (mục 4–5) | Suy luận (mục 6–7) |
+|---|---|---|---|
+| A100 / L4 / H100 (có bf16, từ 22 GB) | `bf16` | có (QLoRA nếu < 70 GB) | Qwen3-14B gốc qua vLLM (FP8 nếu < 45 GB) |
+| **T4** / V100 (16 GB, không bf16) | `t4` | **không** (14B trên T4 mất hàng chục giờ) | **Qwen3-14B-AWQ** (cùng model, lượng tử 4-bit) + adapter, fp16 |
+| không có GPU | `cpu` | không | chỉ các ô CPU: chấm điểm, hiệu chuẩn, **replay** bộ chọn (7a) |
+
+Adapter đã train trên A100 nằm trên Drive (`lora_phaseA/adapter_bf16`), nên với T4 **không cần train lại**.
+
 **Cần chuẩn bị**
-- Runtime → Change runtime type → **A100 GPU** (tốt nhất) hoặc **L4**. **T4 không dùng được** (không có bf16, chỉ 16 GB).
-- Bật **High-RAM** nếu có.
+- Runtime → Change runtime type → GPU (A100, L4 hoặc T4), bật **High-RAM** nếu có.
 - Colab Secrets (biểu tượng chìa khoá bên trái), bật *Notebook access*:
-  - `GITHUB_TOKEN`: fine-grained token, chỉ repo này, quyền *Contents: Read and write*. Cần ở bước 6.
+  - `GITHUB_TOKEN`: fine-grained token, chỉ repo này, quyền *Contents: Read and write*. Cần ở mục 8.
   - `HF_TOKEN` (tuỳ chọn): token Hugging Face, chỉ cần nếu publish model merge.
   - **Không dán token vào ô code.**
 
-**Thời gian và compute units** (ước lượng, chưa đo): tải model 5–15 phút; tạo dữ liệu 20–40 phút (CPU); train pha A
-với `MAX_PER_TASK=1500` khoảng 5 giờ trên A100 (đã đo: 822 bước), lâu hơn khoảng 3 lần trên L4; đánh giá trên fold 0
-khoảng 1–2 giờ. Theo dõi compute units ở góc phải trên.
+**Thời gian** (A100: đã đo; T4: ước lượng, chưa đo): train pha A khoảng 5 giờ trên A100 (822 bước). Trên T4, tải
+Qwen3-14B-AWQ (khoảng 10 GB) 5–10 phút; chạy lại `noisy_lora` ở mục 6 khoảng 2–3 giờ; public ở 7b khoảng 1,5–3 giờ.
+Ô 7a (replay) chỉ cần CPU, khoảng 1 phút.
 
-Khi bị ngắt kết nối, máy ảo mới không còn thư viện và model, còn Drive vẫn giữ checkpoint và dữ liệu. Chạy lại
-từ ô **1** theo thứ tự: các bước đã xong sẽ được bỏ qua, và việc train tự tiếp tục từ checkpoint cuối.
+Khi bị ngắt kết nối, máy ảo mới không còn thư viện và model, còn Drive vẫn giữ checkpoint, adapter và log. Chạy lại
+từ ô **1** theo thứ tự: các bước đã xong sẽ được bỏ qua.
 """)
 
 md("## 1. Cấu hình")
@@ -55,13 +64,17 @@ MAX_PER_TASK = 1500                # A: thử nhanh (1500); B: 6000 nếu đủ 
 EPOCHS = 1
 LR = 1e-4
 OUT_BRANCH = f"colab-finetune-phase{PHASE.lower()}"   # nhánh GitHub nhận kết quả (không đẩy thẳng lên main)
+AWQ_REPO = "Qwen/Qwen3-14B-AWQ"    # T4: bản lượng tử 4-bit chính thức của Qwen3-14B (cùng kiến trúc, cùng 14,8B tham số)
+T4_G4_MAX = 20                     # T4: số câu mỗi shop chạy G4 khi đánh giá (A100: mọi câu); G4 là phần chậm nhất
 # ---------------------------------------------------------------------------------
 import os
 WORK = "/content/drive/MyDrive/datamate"            # nằm trên Drive: còn nguyên khi mất kết nối
 REPO = "/content/datamate"
 BASE = "/content/models/qwen3-14b"
+AWQ_DIR = "/content/models/qwen3-14b-awq"
 DATA = f"{WORK}/data_phase{PHASE}"
 RUN = f"{WORK}/lora_phase{PHASE}"
+ADAPTER = f"{RUN}/adapter_bf16"                     # adapter đã train (A100), dùng lại trên T4
 EVAL = f"{WORK}/eval_phase{PHASE}"
 os.environ["DATAMATE_CACHE"] = "/content/cache"
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -73,15 +86,34 @@ print(PHASE, DATA, RUN, "| Python", sys.version.split()[0])
 
 md("## 2. GPU, Google Drive, repo")
 code("""
-import subprocess
+import shutil, subprocess
 info = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-                      capture_output=True, text=True).stdout.strip()
-print(info or "KHÔNG CÓ GPU: Runtime -> Change runtime type -> A100 / L4")
-name, mem = (info.split(",")[0].strip(), int(info.split(",")[1])) if info else ("", 0)
-assert info and "T4" not in name and "V100" not in name, "Cần A100 hoặc L4 (T4/V100 không có bf16)"
+                      capture_output=True, text=True).stdout.strip().splitlines()[0] if shutil.which("nvidia-smi") else ""
+name, mem = (info.split(",")[0].strip(), int(info.split(",")[1])) if info else ("CPU", 0)
+NO_BF16 = any(k in name for k in ("T4", "V100", "P100", "K80", "P4"))
+if not info:
+    PROFILE = "cpu"
+elif not NO_BF16 and mem >= 22000:
+    PROFILE = "bf16"
+else:
+    PROFILE = "t4"
+CAN_TRAIN = PROFILE == "bf16"
 QLORA = mem < 70000                # < 70 GB: QLoRA 4-bit; A100 80GB / H100: LoRA BF16
-VLLM_FLAGS = "--tp 1 --max-len 8192 --gpu-util 0.90" + (" --quant fp8" if mem < 45000 else "")
-print("QLoRA:", QLORA, "| vLLM flags:", VLLM_FLAGS)
+if PROFILE == "bf16":
+    INFER = BASE
+    VLLM_FLAGS = "--tp 1 --max-len 8192 --gpu-util 0.90" + (" --quant fp8" if mem < 45000 else "")
+elif PROFILE == "t4":
+    # 16 GB, không bf16: model AWQ 4-bit (khoảng 10 GB) ở fp16, không CUDA graph để dành bộ nhớ cho KV cache
+    INFER = AWQ_DIR
+    VLLM_FLAGS = "--tp 1 --max-len 8192 --gpu-util 0.92 --quant awq --dtype half --enforce-eager"
+else:
+    INFER, VLLM_FLAGS = None, ""
+if INFER:
+    VLLM_FLAGS += " --require-llm"   # LLM không khởi động được thì dừng hẳn, không lặng lẽ chạy rule-only
+print(f"GPU: {name} ({mem} MiB) | PROFILE = {PROFILE} | train: {CAN_TRAIN} | model suy luận: {INFER}")
+print("vLLM flags:", VLLM_FLAGS or "-")
+if PROFILE == "t4":
+    print("T4: bỏ qua mục 4-5 (train). Dùng adapter đã có trên Drive:", os.path.exists(f"{RUN}/adapter_bf16/adapter_config.json"))
 """)
 code("""
 from google.colab import drive
@@ -101,60 +133,83 @@ else:
 !cd {REPO} && git lfs install --local && git log --oneline -1
 """)
 
-md("## 3. Cài thư viện và tải Qwen3-14B")
+md("## 3. Cài thư viện và tải model")
 code("""
-# vLLM 0.12.0 (suy luận; hỗ trợ Python 3.10-3.13 như Colab hiện nay) kéo theo PyTorch 2.9.0; sau đó là thư viện
-# huấn luyện ĐÃ GHIM (transformers 4.57.6, trl 0.24.0, peft 0.17.1). Không dùng transformers 5.x / trl 1.x.
-# Mất khoảng 5-10 phút. Pip có thể in cảnh báo xung đột với gói sẵn có của Colab (TensorFlow, ...): bỏ qua được.
-!pip install -q "vllm==0.12.0"
+# vLLM 0.12.0 (suy luận; Python 3.10-3.13) kéo theo PyTorch 2.9.0; sau đó là thư viện huấn luyện ĐÃ GHIM
+# (transformers 4.57.6, trl 0.24.0, peft 0.17.1). Không dùng transformers 5.x / trl 1.x. Khoảng 5-10 phút.
+# Pip có thể in cảnh báo xung đột với gói sẵn có của Colab (TensorFlow, ...): bỏ qua được.
+if PROFILE != "cpu":
+    !pip install -q "vllm==0.12.0"
 !cd {REPO} && pip install -q -r requirements.txt -r requirements-train.txt
-!python -c "import torch, transformers, trl, peft, vllm; print('torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| transformers', transformers.__version__, '| trl', trl.__version__, '| peft', peft.__version__, '| vllm', vllm.__version__)"
+!python -c "import torch, transformers, trl, peft; print('torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| transformers', transformers.__version__, '| trl', trl.__version__, '| peft', peft.__version__)"
+if PROFILE != "cpu":
+    !python -c "import vllm; print('vllm', vllm.__version__)"
 """)
 md("""
-Dòng cuối phải in `cuda True | transformers 4.57.6 | trl 0.24.0 | peft 0.17.1 | vllm 0.12.0`.
-- `cuda False`: runtime không có GPU → Runtime → Change runtime type → A100 / L4.
+Phải thấy `transformers 4.57.6 | trl 0.24.0 | peft 0.17.1`, và (khi có GPU) `cuda True` cùng `vllm 0.12.0`.
+- `cuda False` dù đã chọn GPU: Runtime → Change runtime type, chọn lại GPU.
 - Nếu phiên này đã từng cài phiên bản khác (ví dụ transformers 5.x), vào **Runtime → Restart session**, rồi chạy lại ô 1,
-  ô GPU, ô mount Drive và tiếp tục từ ô tải model. Thư viện đã cài vẫn còn sau khi restart session.
+  mục 2 và tiếp tục từ ô tải model. Thư viện đã cài vẫn còn sau khi restart session.
 """)
 code("""
 from huggingface_hub import snapshot_download
-if not os.path.exists(f"{BASE}/config.json"):
+if PROFILE == "bf16" and not os.path.exists(f"{BASE}/config.json"):
     snapshot_download("Qwen/Qwen3-14B", local_dir=BASE, ignore_patterns=["*.pth", "original/*"])
-!cd {REPO} && python scripts/count_params.py {BASE}
+if PROFILE == "t4" and not os.path.exists(f"{AWQ_DIR}/config.json"):
+    snapshot_download(AWQ_REPO, local_dir=AWQ_DIR)
+ADAPTER = f"{RUN}/adapter_bf16"
+ADAPTER_ARG = ADAPTER if os.path.exists(f"{ADAPTER}/adapter_config.json") else ""
+if INFER:
+    # luật <= 15B: model suy luận + adapter. Với AWQ, mỗi số int32 đóng gói 8 trọng số 4-bit; script đếm đúng điều đó.
+    !cd {REPO} && python scripts/count_params.py {INFER} {ADAPTER_ARG}
 """)
 
-md("## 4. Tạo dữ liệu fine-tune (chỉ từ train)")
+md("""
+## 4. Tạo dữ liệu fine-tune (chỉ từ train)
+
+Chỉ chạy khi `PROFILE = "bf16"`. Trên T4 hoặc CPU, ô này và mục 5 tự bỏ qua.
+""")
 code("""
-HOLD = f"--holdout-fold {HOLDOUT_FOLD}" if PHASE == "A" else ""
-os.makedirs(DATA, exist_ok=True)
-!cd {REPO} && python scripts/build_artifacts.py data/train | tail -1
-!cd {REPO} && python scripts/build_sql_silver.py data/train | tail -1
-if not os.path.exists(f"{DATA}/sft.jsonl"):
-    !cd {REPO} && python training/build_sft_data.py --split data/train --out {DATA}/sft.jsonl --n-aug 2 {HOLD} | tail -2
-if not os.path.exists(f"{DATA}/sql_sft/sql_sft.jsonl"):
-    !cd {REPO} && python training/build_sql_sft.py --split data/train --out {DATA}/sql_sft --n-aug 1 {HOLD} | tail -2
-!ls -la {DATA} {DATA}/sql_sft
+if not CAN_TRAIN:
+    print(f"PROFILE = {PROFILE}: bỏ qua tạo dữ liệu và train. Adapter dùng ở mục 6-7:", ADAPTER)
+else:
+    HOLD = f"--holdout-fold {HOLDOUT_FOLD}" if PHASE == "A" else ""
+    os.makedirs(DATA, exist_ok=True)
+    !cd {REPO} && python scripts/build_artifacts.py data/train | tail -1
+    !cd {REPO} && python scripts/build_sql_silver.py data/train | tail -1
+    if not os.path.exists(f"{DATA}/sft.jsonl"):
+        !cd {REPO} && python training/build_sft_data.py --split data/train --out {DATA}/sft.jsonl --n-aug 2 {HOLD} | tail -2
+    if not os.path.exists(f"{DATA}/sql_sft/sql_sft.jsonl"):
+        !cd {REPO} && python training/build_sql_sft.py --split data/train --out {DATA}/sql_sft --n-aug 1 {HOLD} | tail -2
+    !ls -la {DATA} {DATA}/sql_sft
 """)
 
 md("""
 ## 5. Huấn luyện
 
-Chạy lâu. Nếu bị ngắt kết nối, chạy lại các ô 1 → 4 (bước đã xong được bỏ qua) rồi chạy ô này: `--resume` tiếp tục
-từ checkpoint mới nhất trong `RUN` trên Drive. Khi xong, adapter bf16 nằm ở `RUN/adapter_bf16`.
+Chạy lâu, và chỉ chạy khi `PROFILE = "bf16"`. Nếu bị ngắt kết nối, chạy lại các ô 1 → 4 (bước đã xong được bỏ qua)
+rồi chạy ô này: `--resume` tiếp tục từ checkpoint mới nhất trong `RUN` trên Drive. Khi xong, adapter bf16 nằm ở
+`RUN/adapter_bf16`.
 """)
 code("""
 # Kiểm tra nhanh (~1 phút) toàn bộ đường train bằng một model Qwen3 tí hon: lỗi phiên bản thư viện lộ ra ở đây,
 # trước khi nạp 30 GB trọng số. Phải in "SMOKE TEST OK".
-!cd {REPO} && python training/smoke_test.py --base {BASE} --data {DATA}/sft.jsonl {DATA}/sql_sft/sql_sft.jsonl
+if CAN_TRAIN:
+    !cd {REPO} && python training/smoke_test.py --base {BASE} --data {DATA}/sft.jsonl {DATA}/sql_sft/sql_sft.jsonl
+else:
+    print("bỏ qua (không train trên", PROFILE + ")")
 """)
 code("""
-QL = "--qlora" if QLORA else ""
-!cd {REPO} && python training/sft_lora.py --model {BASE} --data {DATA}/sft.jsonl {DATA}/sql_sft/sql_sft.jsonl \\
-    --out {RUN} {QL} --epochs {EPOCHS} --lr {LR} --max-per-task {MAX_PER_TASK} --max-len 8192 --resume
-if os.path.exists(f"{RUN}/adapter_bf16/adapter_model.safetensors"):
-    !cd {REPO} && python scripts/count_params.py {BASE} {RUN}/adapter_bf16
+if CAN_TRAIN:
+    QL = "--qlora" if QLORA else ""
+    !cd {REPO} && python training/sft_lora.py --model {BASE} --data {DATA}/sft.jsonl {DATA}/sql_sft/sql_sft.jsonl \\
+        --out {RUN} {QL} --epochs {EPOCHS} --lr {LR} --max-per-task {MAX_PER_TASK} --max-len 8192 --resume
+    if os.path.exists(f"{RUN}/adapter_bf16/adapter_model.safetensors"):
+        !cd {REPO} && python scripts/count_params.py {BASE} {RUN}/adapter_bf16
+    else:
+        print("Chưa có adapter: quá trình train ở trên chưa xong hoặc bị lỗi. Đọc thông báo lỗi phía trên.")
 else:
-    print("Chưa có adapter: quá trình train ở trên chưa xong hoặc bị lỗi. Đọc thông báo lỗi phía trên.")
+    print("bỏ qua (không train trên", PROFILE + ")")
 """)
 
 md("""
@@ -188,6 +243,11 @@ md("""
 
 Ô dưới tự chạy lại `noisy_lora`, vì G4 giờ chạy được. `noisy_rule` và `noisy_base` được giữ: log cũ vẫn chấm lại được.
 **Chỉ muốn thử bước 1, không dùng GPU:** bỏ qua ô dưới, chạy ô validate (ô tiếp theo), rồi ô 7a.
+
+**Trên T4:** `noisy_lora` chạy với Qwen3-14B-AWQ thay cho bản gốc FP8 của A100, và G4 chỉ chạy trên `T4_G4_MAX` câu
+mỗi shop. Vì vậy so `base` (log A100) với `lora` (T4) chỉ là gần đúng: so các dòng G2, G3; số của G4 là một mẫu nhỏ.
+Mốc cần vượt trên leaderboard là **0,912** của bản rule-only. Điểm đó cao một phần vì luật G1 được viết sau khi đọc câu
+hỏi public, nên trên private sẽ thấp hơn. Ở những câu G1 không chắc, chỉ LLM mới có thể thêm điểm.
 """)
 code("""
 import re, json, shutil
@@ -195,13 +255,16 @@ os.makedirs(EVAL, exist_ok=True)
 NOISY = f"/content/noisy_fold{HOLDOUT_FOLD}"   # đĩa máy Colab (Drive không tạo được symlink); seed cố định nên tạo lại y hệt
 if not os.path.exists(f"{NOISY}/questions.jsonl"):
     !cd {REPO} && python scripts/make_noisy_split.py data/train {NOISY} --fold {HOLDOUT_FOLD}
-LLM_EVAL = "DATAMATE_G4_SCOPE=all DATAMATE_G4_MAX=1000"
-def run(tag, extra, env="", version=""):
+G4_MAX = 1000 if PROFILE == "bf16" else T4_G4_MAX
+LLM_EVAL = f"DATAMATE_G4_SCOPE=all DATAMATE_G4_MAX={G4_MAX}"
+def run(tag, extra, env="", version="", keep_old=False):
     d = f"{EVAL}/{tag}"
     cmd = f"cd {REPO} && {env} python -m datamate.predict --data {NOISY} {extra} --out {d}/submission.jsonl"
     sig = cmd + (f"  # {version}" if version else "")
     done = f"{d}/cmd.txt"                      # chạy lại khi lệnh (hoặc version) đổi; bỏ qua nếu đã chạy xong đúng như vậy
-    if not (os.path.exists(done) and open(done).read() == sig):
+    if keep_old and os.path.exists(f"{d}/predict.log") and os.path.isdir(f"{d}/logs"):
+        print(f"{tag}: giữ lần chạy đã có trên Drive")
+    elif not (os.path.exists(done) and open(done).read() == sig):
         shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
         print("đang chạy", tag, "...")
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -213,9 +276,13 @@ def run(tag, extra, env="", version=""):
     print(f"{tag:12s} PA = {m[-1][0]}  {m[-1][1]}" if m else f"{tag}: không thấy PA trong log")
 if PHASE == "A":
     run("noisy_rule", "--llm none")
-    run("noisy_base", f"--llm vllm --model {BASE} {VLLM_FLAGS}", LLM_EVAL)
-    run("noisy_lora", f"--llm vllm --model {BASE} --lora {RUN}/adapter_bf16 {VLLM_FLAGS}", LLM_EVAL,
-        version="g4-sql-extract-fix")         # lần trước G4 của adapter không đọc được SQL nào
+    if PROFILE == "cpu":
+        print("Không có GPU: dùng các lần chạy LLM đã có trên Drive. Chạy tiếp ô validate.")
+    else:
+        # model gốc: giữ lần chạy đã có (A100) nếu có, vì code mới không đổi gì ở đầu ra của nó ngoài phần chọn
+        run("noisy_base", f"--llm vllm --model {INFER} {VLLM_FLAGS}", LLM_EVAL, keep_old=True)
+        run("noisy_lora", f"--llm vllm --model {INFER} --lora {ADAPTER} {VLLM_FLAGS}", LLM_EVAL,
+            version="g4-sql-extract-fix")     # lần trước G4 của adapter không đọc được SQL nào
 """)
 code("""
 # Chấm từng generator, và hiệu chuẩn độ tin cậy G2-G4 / G_select trên shop chưa thấy (chỉ dùng nhãn train).
@@ -293,8 +360,8 @@ md("""
 - **7a (chỉ CPU, khoảng 1 phút):** áp bộ chọn mới lên lần chạy public đã có, không chạy lại LLM. Kết quả là file nộp
   của **bước 1** (bộ chọn mới; lần chạy cũ không có G4). Dòng `--legacy` phải in `same_as_logged_final 1000`: tức là
   replay dựng lại đúng lần chạy cũ, nên file mới chỉ khác ở những chỗ bộ chọn mới quyết định khác.
-- **7b (GPU, khoảng 15 phút):** chạy lại toàn bộ với code mới (bước 1 + 2: bộ chọn mới và G4 đã sửa). Ô này tự chạy
-  lại khi reliability hoặc code thay đổi.
+- **7b (GPU; A100 khoảng 15 phút, T4 khoảng 1,5–3 giờ, ước lượng):** chạy lại toàn bộ với code mới (bước 1 + 2: bộ
+  chọn mới và G4 đã sửa). Ô này tự chạy lại khi reliability, code hoặc GPU thay đổi. Giữ tab Colab mở trong lúc chạy.
 
 Mỗi file nên nộp **một lần** lên leaderboard, và so với bản rule-only. Đừng thử đi thử lại theo điểm public.
 """)
@@ -317,25 +384,28 @@ else:
 code("""
 # 7b. Chạy lại public với code mới (GPU)
 PUB = f"{PUBD}/submission.jsonl"
+assert INFER, "Không có GPU: 7b cần GPU (A100/L4/T4). Dùng file của 7a."
 rel_now = open(REL, encoding="utf-8").read()
 head = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+run_id = f"{head} {INFER} {VLLM_FLAGS}"           # code + model + cờ vLLM của lần chạy
 used, ver = f"{PUBD}/reliability_used.json", f"{PUBD}/code_version.txt"
 fresh = (os.path.exists(PUB) and os.path.exists(used) and open(used, encoding="utf-8").read() == rel_now
-         and os.path.exists(ver) and open(ver).read() == head)
+         and os.path.exists(ver) and open(ver).read() == run_id)
 if not fresh:
-    # Tạo lại khi reliability hoặc code thay đổi. Lần chạy trước được giữ ở *_prev (chạy 7a trước nếu muốn replay nó).
+    # Tạo lại khi reliability, code hoặc GPU thay đổi. Lần chạy trước được giữ ở *_prev (chạy 7a trước nếu muốn replay nó).
     if os.path.isdir(PUBD):
         shutil.rmtree(PUBD + "_prev", ignore_errors=True); shutil.move(PUBD, PUBD + "_prev")
     os.makedirs(PUBD)
     shutil.copy(REL, f"{REPO}/artifacts/reliability.json")
-    r = subprocess.run(f"cd {REPO} && python -m datamate.predict --data data/public_test --llm vllm --model {BASE} "
-                       f"--lora {RUN}/adapter_bf16 {VLLM_FLAGS} --out {PUB}", shell=True, capture_output=True, text=True)
+    print("đang chạy public với", INFER, "...")
+    r = subprocess.run(f"cd {REPO} && python -m datamate.predict --data data/public_test --llm vllm --model {INFER} "
+                       f"--lora {ADAPTER} {VLLM_FLAGS} --out {PUB}", shell=True, capture_output=True, text=True)
     open(f"{PUBD}/predict.log", "w").write(r.stderr)
-    print("\\n".join(l for l in r.stderr.splitlines() if "[datamate]" in l))
+    print("\\n".join(l for l in r.stderr.splitlines() if "[datamate]" in l or "[llm]" in l))
     if r.returncode != 0:
         print(r.stderr[-3000:]); raise RuntimeError("predict trên public lỗi, xem log ở trên")
     open(used, "w", encoding="utf-8").write(rel_now)
-    open(ver, "w").write(head)
+    open(ver, "w").write(run_id)
 !cd {REPO} && python scripts/check_submission.py {PUB} data/public_test/questions.jsonl
 """)
 code("""
@@ -415,7 +485,7 @@ open(f"{ad_dst}/TRAINING.md", "w", encoding="utf-8").write(f'''# LoRA adapter �
 - base: Qwen/Qwen3-14B; method: {"QLoRA 4-bit" if globals().get("QLORA") else "LoRA BF16"}, rank 32, epochs {EPOCHS}, lr {LR}, max-per-task {MAX_PER_TASK}
 - data: train split only{"; held-out fold " + str(HOLDOUT_FOLD) + " not used for training" if PHASE == "A" else "; all 30 shops"}
 - examples per task (before the cap): {json.dumps(counts, ensure_ascii=False)}
-- GPU: {globals().get("name", "?")}; date: {datetime.date.today()}
+- this notebook run: GPU {globals().get("name", "?")}, inference model {globals().get("INFER")}; date: {datetime.date.today()}
 - phase A evaluation on the held-out fold {HOLDOUT_FOLD}, noisy copy (scripts/make_noisy_split.py):
   PA end-to-end and LLM generators only (G1 removed): {json.dumps(results)}
 ''')
@@ -451,12 +521,15 @@ không cần bước này. Cần khoảng 60 GB đĩa và runtime High-RAM. Repo
 code("""
 from google.colab import userdata
 HF_REPO = "<hf-username>/datamate-qwen3-14b-ft"     # đổi thành tên của bạn
-os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
-!cd {REPO} && python training/sft_lora.py --merge --model {BASE} --adapter {RUN}/adapter_bf16 --out /content/merged
-!cd {REPO} && python scripts/count_params.py /content/merged && python scripts/publish_hf.py /content/merged {HF_REPO}
+if PROFILE != "bf16":
+    print("Bỏ qua: merge cần Qwen3-14B gốc (bf16) và khoảng 60 GB đĩa, không làm trên", PROFILE)
+else:
+    os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+    !cd {REPO} && python training/sft_lora.py --merge --model {BASE} --adapter {ADAPTER} --out /content/merged
+    !cd {REPO} && python scripts/count_params.py /content/merged && python scripts/publish_hf.py /content/merged {HF_REPO}
 """)
 
-nb = {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"provenance": [], "gpuType": "A100"},
+nb = {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"provenance": [], "gpuType": "T4"},
                                    "kernelspec": {"display_name": "Python 3", "name": "python3"},
                                    "language_info": {"name": "python"}},
       "nbformat": 4, "nbformat_minor": 0}

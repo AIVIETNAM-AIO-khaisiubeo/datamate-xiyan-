@@ -12,25 +12,41 @@ import struct
 import sys
 
 
-def count_file(path: str) -> int:
+QUANT_META = (".qzeros", ".scales", ".g_idx")     # AWQ / GPTQ bookkeeping, not model parameters
+
+
+def count_file(path: str, bits: int = 0) -> int:
+    """bits > 0: AWQ / GPTQ checkpoint whose int32 '*.qweight' tensors pack 32 // bits weights each, so a 4-bit copy of
+    a 14.8B model still counts 14.8B (quantisation changes the storage, not the number of parameters)."""
     with open(path, "rb") as fh:
         n = struct.unpack("<Q", fh.read(8))[0]
         header = json.loads(fh.read(n))
     total = 0
     for k, v in header.items():
-        if k == "__metadata__":
+        if k == "__metadata__" or (bits and k.endswith(QUANT_META)):
             continue
         p = 1
         for d in v["shape"]:
             p *= d
+        if bits and k.endswith(".qweight"):
+            p *= 32 // bits
         total += p
     return total
 
 
+def _quant_bits(path: str) -> int:
+    try:
+        q = json.load(open(os.path.join(path, "config.json"), encoding="utf-8")).get("quantization_config") or {}
+    except (OSError, ValueError):
+        return 0
+    return int(q.get("bits") or q.get("w_bit") or 0) if q.get("quant_method") in ("awq", "gptq") else 0
+
+
 def count_dir(path: str) -> int:
-    files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith(".safetensors")] if os.path.isdir(path) \
-        else [path]
-    return sum(count_file(f) for f in files)
+    if not os.path.isdir(path):
+        return count_file(path)
+    bits = _quant_bits(path)
+    return sum(count_file(os.path.join(path, f), bits) for f in os.listdir(path) if f.endswith(".safetensors"))
 
 
 def main():

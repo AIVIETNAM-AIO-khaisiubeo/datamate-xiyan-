@@ -44,10 +44,14 @@ Lịch sử phát triển (cùng 3.000 câu): 0.881 (bản đầu, 23 shop) → 
 | Bản | Hệ thống | Điểm BTC |
 |---|---|---:|
 | 1 | G1 rule-only | 0.561 |
-| 2 | G1 rule-only sau phân tích lỗi public không nhãn (`submissions/public_test_rule_only.jsonl`) | cao hơn 0.777 (chưa ghi số) |
+| 2 | G1 rule-only sau phân tích lỗi public không nhãn (`submissions/public_test_rule_only.jsonl`) | **0.912** |
 | 3 | G1 + Qwen3-14B + LoRA pha A (`colab-finetune-phasea`) | **0.777** |
 
-Bản 3 khác bản 2 ở 116 câu: 73 câu LLM thay đáp án G1 không bị đánh dấu, 46 câu có số liệu bị đổi thành
+Bản 2 cao một phần vì luật G1 được viết sau khi đọc câu hỏi và dữ liệu public (không nhãn). Đó là luật chung, nhưng
+được chọn bằng cách nhìn public, nên 0.912 lạc quan so với private.
+
+Bản 3 kém bản 2 135 điểm (trên 1.000) và khác bản 2 ở 116 câu. Mỗi câu khác nhau đổi điểm tối đa ±2, nên phần lớn thay
+đổi của LLM là sai. Trong 116 câu đó: 73 câu LLM thay đáp án G1 không bị đánh dấu, 46 câu có số liệu bị đổi thành
 `unanswerable`, và G4 không có ứng viên nào (SQL của adapter dư dấu đóng ```` ``` ````). Sửa trong bộ chọn
 (`datamate/select/selector.py`: một phiếu cho mỗi LLM, G1 không bị đánh dấu thì không bị thay, `unanswerable` của riêng
 LLM không thay đáp án số) và trong `extract_sql`. Hai bản tiếp theo: replay bộ chọn mới trên log của bản 3 (chỉ CPU), rồi

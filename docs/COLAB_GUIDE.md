@@ -24,8 +24,8 @@ lên một **nhánh mới** của repo.
 
 ## 2. Chuẩn bị (một lần)
 
-1. **GPU:** Runtime → Change runtime type → **A100** (tốt nhất) hoặc **L4**, bật **High-RAM** nếu có. **T4 không
-   dùng được**: không có bf16 và chỉ có 16 GB.
+1. **GPU:** Runtime → Change runtime type → **A100** (tốt nhất) hoặc **L4** để **train**, bật **High-RAM** nếu có.
+   **T4** chỉ dùng để **suy luận** với adapter đã train (xem mục 6c): T4 không có bf16 và chỉ có 16 GB.
 2. **Token GitHub** để notebook đẩy kết quả:
    - GitHub → Settings → Developer settings → *Fine-grained tokens* → *Generate new token*.
    - *Repository access*: chỉ chọn `datamate-xiyan-`. *Permissions*: **Contents: Read and write**. Đặt hạn dùng ngắn.
@@ -156,6 +156,30 @@ Code mới sửa cả ba (xem `datamate/select/selector.py`). Không cần train
 
 Nộp mỗi file **một lần** và ghi điểm vào `docs/RESULTS.md`: file 7a đo riêng tác dụng của bộ chọn mới, file 7b đo thêm
 G4. Trên public, phần lệch so với bản rule-only giờ chỉ còn ở những câu G1 bỏ trống hoặc tự đánh dấu nghi ngờ.
+
+## 6c. Chỉ có T4 (hoặc không có GPU)
+
+Ô GPU ở mục 2 tự chọn `PROFILE`:
+
+| | A100 / L4 (`bf16`) | T4 (`t4`) | không GPU (`cpu`) |
+|---|---|---|---|
+| Train (mục 4–5) | có | **bỏ qua**: 14B trên T4 mất hàng chục giờ, và không có bf16 | bỏ qua |
+| Model suy luận | `Qwen/Qwen3-14B` (FP8 nếu < 45 GB) | **`Qwen/Qwen3-14B-AWQ`**: cùng model, lượng tử 4-bit (khoảng 10 GB), chạy fp16 | — |
+| Adapter | `lora_phaseA/adapter_bf16` | cùng adapter đó, áp lên bản AWQ | — |
+| Mục 6, chạy | rule, base, lora; G4 trên mọi câu | rule; base giữ log A100; lora chạy lại; G4 trên `T4_G4_MAX` câu mỗi shop | chỉ rule |
+| Mục 6, validate; 7a replay | có | có | **có** (chỉ CPU) |
+| 7b, public | khoảng 15 phút | khoảng 1,5–3 giờ (ước lượng) | không |
+
+Lưu ý khi chạy trên T4:
+- **Luật ≤ 15B:** bản AWQ vẫn là 14,8B tham số. Chỉ cách lưu trữ thay đổi; `scripts/count_params.py` đếm lại các trọng
+  số 4-bit đã đóng gói.
+- **Adapter được train trên bản bf16** rồi áp lên bản AWQ, nên kết quả có thể lệch một chút so với A100. So `base`
+  (A100) với `lora` (T4) ở mục 6 chỉ là gần đúng.
+- Mọi lệnh LLM chạy với `--require-llm`. Nếu vLLM không khởi động được trên T4, ô **dừng kèm lỗi**, thay vì lặng lẽ
+  chạy rule-only như trước.
+- Nếu vLLM báo hết bộ nhớ (`CUDA out of memory`, `No available memory for the cache blocks`): ở ô GPU, đổi
+  `--max-len 8192` thành `--max-len 6144`, rồi chạy lại.
+- Thứ tự rẻ nhất: ô validate + **7a** (CPU, vài phút) cho file nộp bước 1. Sau đó mới đến `noisy_lora` và 7b trên T4.
 
 ## 7. Lưu ý về luật và chi phí
 

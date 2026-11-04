@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from typing import Callable, Dict, List, Optional
 
@@ -59,12 +60,14 @@ class VLLMBackend(LLMBackend):
 
     def __init__(self, model_path: str, tensor_parallel_size: int = 2, max_model_len: int = 16384,
                  gpu_memory_utilization: float = 0.88, quantization: Optional[str] = None,
-                 enable_thinking: bool = False, dtype: str = "auto", lora_path: Optional[str] = None):
+                 enable_thinking: bool = False, dtype: str = "auto", lora_path: Optional[str] = None,
+                 enforce_eager: bool = False):
         from vllm import LLM  # noqa: import inside so CPU mode never needs vllm
         t0 = time.time()
+        # T4 / V100 (no bf16): dtype="half"; enforce_eager=True saves the memory of CUDA graphs on a 16 GB card
         kw = dict(model=model_path, tensor_parallel_size=tensor_parallel_size, max_model_len=max_model_len,
                   gpu_memory_utilization=gpu_memory_utilization, seed=0, trust_remote_code=True,
-                  enforce_eager=False, dtype=dtype)
+                  enforce_eager=enforce_eager, dtype=dtype)
         if quantization:
             kw["quantization"] = quantization
         self.lora = None
@@ -144,24 +147,34 @@ def make_backend(cfg: Dict) -> LLMBackend:
     if kind in (None, "", "none"):
         return NullBackend()
     path = cfg.get("model_path") or os.environ.get("DATAMATE_MODEL", "/models/llm")
-    if not os.path.exists(path):
-        print(f"[llm] model path {path} not found -> rule-only mode")
+    # require_llm: an evaluation run must fail loudly instead of silently becoming rule-only (e.g. vLLM on a T4)
+    strict = bool(cfg.get("require_llm")) or os.environ.get("DATAMATE_REQUIRE_LLM") == "1"
+
+    def fallback(msg):
+        if strict:
+            raise RuntimeError(f"[llm] {msg} (require_llm is set, so the run stops instead of going rule-only)")
+        print(f"[llm] {msg} -> rule-only mode", file=sys.stderr)
         return NullBackend()
+
+    if not os.path.exists(path):
+        return fallback(f"model path {path} not found")
     lora = cfg.get("lora_path") or None
     if lora and not os.path.exists(os.path.join(lora, "adapter_config.json")):
-        print(f"[llm] LoRA adapter {lora} not found (no adapter_config.json) -> rule-only mode")
-        return NullBackend()
+        return fallback(f"LoRA adapter {lora} not found (no adapter_config.json)")
     try:
         if kind == "vllm":
-            return VLLMBackend(path, tensor_parallel_size=int(cfg.get("tensor_parallel_size", 2)),
-                               max_model_len=int(cfg.get("max_model_len", 16384)),
-                               gpu_memory_utilization=float(cfg.get("gpu_memory_utilization", 0.88)),
-                               quantization=cfg.get("quantization"),
-                               enable_thinking=bool(cfg.get("enable_thinking", False)), lora_path=lora)
+            be = VLLMBackend(path, tensor_parallel_size=int(cfg.get("tensor_parallel_size", 2)),
+                             max_model_len=int(cfg.get("max_model_len", 16384)),
+                             gpu_memory_utilization=float(cfg.get("gpu_memory_utilization", 0.88)),
+                             quantization=cfg.get("quantization"), dtype=cfg.get("dtype") or "auto",
+                             enable_thinking=bool(cfg.get("enable_thinking", False)), lora_path=lora,
+                             enforce_eager=bool(cfg.get("enforce_eager", False)))
+            print(f"[llm] vLLM ready: {be.family} in {be.load_seconds:.0f}s", file=sys.stderr)
+            return be
         if kind == "hf":
             return HFBackend(path, lora_path=lora)
     except Exception as e:  # never let a GPU problem kill the run: degrade to rule-only
-        print(f"[llm] failed to start {kind}: {e} -> rule-only mode")
+        return fallback(f"failed to start {kind}: {type(e).__name__}: {e}")
     return NullBackend()
 
 
